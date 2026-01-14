@@ -25,16 +25,16 @@ app = FastAPI(title="City of Kingston 311 Chatbot API")
 # CORS middleware for React frontend
 # In production, allow all origins (Vercel will provide the domain)
 # In development, restrict to localhost
-allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173")
-allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
 
-# If ALLOWED_ORIGINS is "*", allow all origins
-if "*" in allowed_origins or allowed_origins_env.strip() == "*":
+# Default behavior: if empty or "*", allow all origins (for production)
+if not allowed_origins_env or allowed_origins_env == "*":
     allowed_origins = ["*"]
     print(f"[CORS] Allowing all origins (wildcard enabled)")
 else:
+    # Parse comma-separated list
+    allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
     print(f"[CORS] Allowed origins: {allowed_origins}")
-    print(f"[CORS] ALLOWED_ORIGINS env var: {allowed_origins_env}")
 
 app.add_middleware(
     CORSMiddleware,
