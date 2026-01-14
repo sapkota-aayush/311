@@ -19,28 +19,32 @@
 
 .chat-header {
   padding: 0.75rem 1rem;
-  background: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid #e5e7eb;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  position: sticky;
+  position: fixed;
   top: 0;
-  z-index: 50;
+  left: 0;
+  right: 0;
+  z-index: 100;
 }
 
 .chat-header-top {
   padding: 0.75rem 1rem;
-  background: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid #e5e7eb;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  position: sticky;
+  position: fixed;
   top: 0;
-  z-index: 50;
+  left: 0;
+  right: 0;
+  z-index: 100;
 }
 
 .language-selector {
@@ -204,6 +208,7 @@
   max-width: 850px;
   width: 100%;
   margin: 0 auto;
+  padding-top: 60px;
   padding-bottom: 140px;
 }
 
@@ -565,10 +570,12 @@
   border: 1px solid #e5e7eb;
   border-radius: 0.75rem;
   padding: 0.875rem 3rem 0.875rem 2.5rem;
-  font-size: 0.9375rem;
+  font-size: 16px; /* Minimum 16px prevents iOS auto-zoom */
   outline: none;
   transition: all 0.2s;
   font-family: 'Public Sans', sans-serif;
+  -webkit-appearance: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .chat-input:focus {
@@ -630,9 +637,19 @@
 
 /* Mobile Responsive */
 @media (max-width: 768px) {
+  .chat-interface {
+    height: 100vh;
+    height: 100dvh; /* Dynamic viewport height for mobile */
+    overflow: hidden;
+  }
+
   .chat-header,
   .chat-header-top {
     padding: 0.5rem 0.75rem;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
   }
 
   .header-logo {
@@ -730,8 +747,10 @@
 
   .chat-input {
     padding: 0.75rem 2.5rem 0.75rem 2rem;
-    font-size: 0.875rem;
+    font-size: 16px; /* Minimum 16px prevents iOS auto-zoom */
     border-radius: 0.625rem;
+    -webkit-appearance: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .input-icon {

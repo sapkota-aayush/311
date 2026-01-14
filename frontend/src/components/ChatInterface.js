@@ -7,6 +7,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
   const [loading, setLoading] = useState(false);
   const [language, setLanguage] = useState('en'); // 'en' or 'fr'
   const messagesEndRef = useRef(null);
+  const inputRef = useRef(null);
   const initialQuerySubmitted = useRef(false);
 
   // Translation map for UI text
@@ -47,6 +48,17 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Auto-focus input on mount (for mobile keyboard)
+  useEffect(() => {
+    // Small delay to ensure page is fully loaded
+    const timer = setTimeout(() => {
+      if (inputRef.current && messages.length === 0) {
+        inputRef.current.focus();
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [messages.length]);
 
   const handleSubmit = async (e, queryOverride = null) => {
     e?.preventDefault();
@@ -453,6 +465,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
           <div className="input-wrapper">
             <span className="input-icon material-symbols-outlined">chat_bubble</span>
             <input
+              ref={inputRef}
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
