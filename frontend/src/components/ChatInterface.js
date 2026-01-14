@@ -99,9 +99,8 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
               const data = JSON.parse(line.slice(6));
               
               if (data.type === 'text' && data.content) {
-                // Clean up extra spaces
-                const cleanContent = data.content.replace(/\s+/g, ' ').trim();
-                accumulatedText += cleanContent;
+                // Accumulate content without aggressive cleaning (preserve formatting)
+                accumulatedText += data.content;
                 
                 // Update the streaming message
                 setMessages(prev => prev.map(msg => 

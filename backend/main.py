@@ -5,6 +5,7 @@ Using LangChain for RAG pipeline
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Tuple
 import os
@@ -16,6 +17,8 @@ from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from pinecone import Pinecone
 from openai import OpenAI
+import json
+import asyncio
 
 app = FastAPI(title="City of Kingston 311 Chatbot API")
 
@@ -48,7 +51,8 @@ llm = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0.2,
     openai_api_key=openai_api_key,
-    max_tokens=500  # Allow comprehensive answers
+    max_tokens=800,  # Allow comprehensive answers
+    streaming=True  # Enable streaming
 )
 
 # Create custom prompt template - Simple RAG: provide complete information from database
@@ -264,6 +268,133 @@ class HealthResponse(BaseModel):
 async def root():
     """Health check endpoint"""
     return {"status": "ok", "message": "City of Kingston 311 Chatbot API is running"}
+
+
+@app.post("/query/stream")
+async def query_pinecone_stream(request: QueryRequest):
+    """Streaming endpoint for real-time response generation"""
+    async def generate():
+        try:
+            import traceback
+            print(f"[STREAM] Received query: {request.query}")
+            
+            # Classify intent
+            intent_type, category = classify_question_intent(request.query)
+            user_address = extract_address_clean(request.query)
+            print(f"[STREAM] Intent: {intent_type}, Category: {category}")
+            
+            # Handle greetings
+            if is_greeting_or_simple_query(request.query):
+                greeting = "Hello! I'm the City of Kingston 311 assistant. How can I help you today?"
+                yield f"data: {json.dumps({'type': 'text', 'content': greeting, 'done': True})}\n\n"
+                return
+            
+            # Handle live lookups
+            if intent_type == "live_status_lookup":
+                if user_address:
+                    answer = f"I've noted your address: {user_address}. To find your specific garbage collection day, please visit: https://www.cityofkingston.ca/garbage-and-recycling/collection-calendar/"
+                else:
+                    answer = "Garbage collection days depend on your address. Please provide your address so I can direct you to check your schedule."
+                yield f"data: {json.dumps({'type': 'text', 'content': answer, 'done': True})}\n\n"
+                return
+            
+            # Generate embedding and query Pinecone
+            print(f"[STREAM] Generating embedding...")
+            embedding_response = openai_client.embeddings.create(
+                model="text-embedding-3-small",
+                input=request.query
+            )
+            query_embedding = embedding_response.data[0].embedding
+            print(f"[STREAM] Querying Pinecone...")
+            
+            results = index.query(
+                vector=query_embedding,
+                top_k=request.top_k * 3,
+                include_metadata=True
+            )
+            print(f"[STREAM] Found {len(results.matches)} matches")
+            
+            category_matches = [
+                match for match in results.matches 
+                if match.metadata.get("category", "").lower() == category.lower()
+            ]
+            
+            formatted_results = []
+            context_parts = []
+            
+            sorted_matches = sorted(
+                category_matches[:request.top_k * 2] if category_matches else results.matches[:request.top_k * 2],
+                key=lambda x: -x.score
+            )
+            
+            for match in sorted_matches:
+                content = match.metadata.get("content", "")
+                if "section menu" in content.lower() or ("learn more" in content.lower() and len(content) < 100):
+                    continue
+                formatted_results.append({
+                    "score": match.score,
+                    "content": content[:500],
+                    "category": match.metadata.get("category", ""),
+                    "topic": match.metadata.get("topic", ""),
+                    "source_url": match.metadata.get("source_url", "")
+                })
+                context_parts.append(content[:1500])
+            
+            if context_parts:
+                context = "\n\n".join(context_parts)
+                template = get_prompt_template(category)
+                prompt_text = template.format(context=context, question=request.query)
+                
+                print(f"[STREAM] Starting OpenAI stream...")
+                # Stream using OpenAI directly
+                stream = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant for the City of Kingston 311 service."},
+                        {"role": "user", "content": prompt_text}
+                    ],
+                    temperature=0.2,
+                    max_tokens=800,
+                    stream=True
+                )
+                
+                full_answer = ""
+                chunk_count = 0
+                for chunk in stream:
+                    try:
+                        if chunk.choices and len(chunk.choices) > 0:
+                            delta = chunk.choices[0].delta
+                            if hasattr(delta, 'content') and delta.content:
+                                content = delta.content
+                                full_answer += content
+                                chunk_count += 1
+                                # Send content as-is (frontend will clean spaces)
+                                if content:
+                                    yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
+                    except Exception as chunk_error:
+                        print(f"[STREAM] Error processing chunk: {chunk_error}")
+                        continue
+                
+                print(f"[STREAM] Streamed {chunk_count} chunks, total length: {len(full_answer)}")
+                
+                # Clean up the full answer
+                full_answer = re.sub(r'\s+', ' ', full_answer).strip()
+                
+                # Send results metadata
+                yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            else:
+                print(f"[STREAM] No context found")
+                yield f"data: {json.dumps({'type': 'text', 'content': \"I couldn't find specific information. Please contact 311 at 613-546-0000.\", 'done': True})}\n\n"
+                
+        except Exception as e:
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+            print(f"[STREAM ERROR] {error_msg}")
+            print(f"[STREAM ERROR TRACEBACK] {error_trace}")
+            yield f"data: {json.dumps({'type': 'error', 'content': error_msg})}\n\n"
+    
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.post("/query", response_model=QueryResponse)
