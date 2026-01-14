@@ -5,7 +5,7 @@ Using LangChain for RAG pipeline
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 from typing import List, Optional, Tuple
 import os
@@ -284,6 +284,11 @@ async def root():
     """Health check endpoint"""
     return {"status": "ok", "message": "City of Kingston 311 Chatbot API is running"}
 
+
+@app.options("/query/stream")
+async def options_query_stream():
+    """Handle CORS preflight for streaming endpoint"""
+    return Response(status_code=200)
 
 @app.post("/query/stream")
 async def query_pinecone_stream(request: QueryRequest):
