@@ -29,19 +29,6 @@ const LandingPage = ({ onStartChat, onServiceClick }) => {
             </div>
           </div>
         </div>
-        <div className="nav-status">
-          <div className="status-item">
-            <span className="status-label">System Status</span>
-            <span className="status-value">
-              <span className="status-dot"></span> Active Response
-            </span>
-          </div>
-          <div className="status-divider"></div>
-          <div className="status-item">
-            <span className="status-label">Library</span>
-            <span className="status-value italic">Health & Senior Verified</span>
-          </div>
-        </div>
       </nav>
 
       <main className="landing-main">
