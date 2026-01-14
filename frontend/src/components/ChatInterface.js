@@ -19,49 +19,9 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
   useEffect(() => {
     if (initialQuery && !initialQuerySubmitted.current && messages.length === 1) {
       initialQuerySubmitted.current = true;
-      const submitInitialQuery = async () => {
-        const userMessage = {
-          type: 'user',
-          text: initialQuery,
-          timestamp: new Date()
-        };
-        setMessages(prev => [...prev, userMessage]);
-        setLoading(true);
-
-        try {
-          const apiUrl = process.env.REACT_APP_API_URL 
-            ? `${process.env.REACT_APP_API_URL}/query` 
-            : 'http://localhost:8000/query';
-          const response = await axios.post(apiUrl, {
-            query: initialQuery,
-            top_k: 3
-          }, {
-            headers: { 'Content-Type': 'application/json' },
-            timeout: 30000
-          });
-
-          if (response.data.answer || (response.data.results && response.data.results.length > 0)) {
-            const botMessage = {
-              type: 'bot',
-              text: response.data.answer || formatResponse(response.data.results || response.data.results),
-              results: response.data.results || response.data.results,
-              timestamp: new Date()
-            };
-            setMessages(prev => [...prev, botMessage]);
-          }
-        } catch (error) {
-          console.error('Error:', error);
-          setMessages(prev => [...prev, {
-            type: 'bot',
-            text: "Sorry, I'm having trouble connecting right now. Please try again later or contact 311 at 613-546-0000.",
-            timestamp: new Date()
-          }]);
-        } finally {
-          setLoading(false);
-        }
-      };
-
-      setTimeout(submitInitialQuery, 500);
+      setTimeout(() => {
+        handleSubmit(null, initialQuery);
+      }, 500);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQuery]);
@@ -89,58 +49,109 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     setInput('');
     setLoading(true);
 
+    // Create a placeholder bot message for streaming
+    const botMessageId = Date.now();
+    const botMessage = {
+      type: 'bot',
+      text: '',
+      results: [],
+      timestamp: new Date(),
+      id: botMessageId,
+      streaming: true
+    };
+    setMessages(prev => [...prev, botMessage]);
+
     try {
-      // Use full URL in development to ensure connection
-      const apiUrl = process.env.NODE_ENV === 'production' ? '/query' : 'http://localhost:8000/query';
+      const baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+      const apiUrl = `${baseUrl}/query/stream`;
       
-      const response = await axios.post(apiUrl, {
-        query: queryText,
-        top_k: 3
-      }, {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
-        timeout: 30000 // 30 second timeout
+        body: JSON.stringify({
+          query: queryText,
+          top_k: 3
+        })
       });
 
-      const results = response.data.results;
-
-      if (response.data.answer || (results && results.length > 0)) {
-        // Use the direct answer from backend (LangChain)
-        const botMessage = {
-          type: 'bot',
-          text: response.data.answer || formatResponse(response.data.results || results),
-          results: response.data.results || results,
-          timestamp: new Date()
-        };
-        setMessages(prev => [...prev, botMessage]);
-      } else {
-        setMessages(prev => [...prev, {
-          type: 'bot',
-          text: "I couldn't find specific information about that. Please try rephrasing your question or contact 311 directly at 613-546-0000.",
-          timestamp: new Date()
-        }]);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulatedText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === 'text' && data.content) {
+                // Clean up extra spaces
+                const cleanContent = data.content.replace(/\s+/g, ' ').trim();
+                accumulatedText += cleanContent;
+                
+                // Update the streaming message
+                setMessages(prev => prev.map(msg => 
+                  msg.id === botMessageId 
+                    ? { ...msg, text: accumulatedText }
+                    : msg
+                ));
+                scrollToBottom();
+              } else if (data.type === 'results') {
+                setMessages(prev => prev.map(msg => 
+                  msg.id === botMessageId 
+                    ? { ...msg, results: data.results || [] }
+                    : msg
+                ));
+              } else if (data.type === 'done' || data.done) {
+                setMessages(prev => prev.map(msg => 
+                  msg.id === botMessageId 
+                    ? { ...msg, streaming: false }
+                    : msg
+                ));
+              } else if (data.type === 'error') {
+                throw new Error(data.content);
+              }
+            } catch (e) {
+              console.error('Error parsing SSE data:', e);
+            }
+          }
+        }
+      }
+
+      // Finalize the message
+      setMessages(prev => prev.map(msg => 
+        msg.id === botMessageId 
+          ? { ...msg, streaming: false, text: accumulatedText.trim() }
+          : msg
+      ));
+
     } catch (error) {
       console.error('Error querying backend:', error);
-      console.error('Error details:', error.response?.data || error.message);
       
-      // More specific error messages
-      let errorMessage = "Sorry, I'm having trouble connecting right now.";
-      
-      if (error.code === 'ECONNREFUSED') {
-        errorMessage = "Unable to connect to the server. Please make sure the backend is running on http://localhost:8000";
-      } else if (error.response?.status === 500) {
-        errorMessage = "The server encountered an error. Please try again or contact 311 at 613-546-0000.";
-      } else if (error.response?.status >= 400) {
-        errorMessage = "There was an error processing your request. Please try again or contact 311 at 613-546-0000.";
-      }
-      
-      setMessages(prev => [...prev, {
-        type: 'bot',
-        text: `${errorMessage}\n\nIf you need immediate assistance, please contact 311 at 613-546-0000.`,
-        timestamp: new Date()
-      }]);
+      // Remove the streaming message and add error message
+      setMessages(prev => {
+        const filtered = prev.filter(msg => msg.id !== botMessageId);
+        filtered.push({
+          type: 'bot',
+          text: "Sorry, I'm having trouble connecting right now. Please try again or contact 311 at 613-546-0000.",
+          timestamp: new Date()
+        });
+        return filtered;
+      });
     } finally {
       setLoading(false);
     }
@@ -306,9 +317,12 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     return elements.length > 0 ? elements : text;
   };
   
-  // Function to format inline markdown (bold, links, etc.)
+  // Function to format inline markdown (bold, links, etc.) - with space cleanup
   const formatInlineMarkdown = (text) => {
     if (!text) return text;
+    
+    // Clean up extra spaces first (but preserve single spaces)
+    text = text.replace(/\s+/g, ' ').trim();
     
     const parts = [];
     let currentIndex = 0;
@@ -350,10 +364,13 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     });
     
     // Build the parts array
-    filteredMatches.forEach((match, idx) => {
+    filteredMatches.forEach((match) => {
       // Add text before match
       if (match.start > currentIndex) {
-        parts.push({ type: 'text', content: text.substring(currentIndex, match.start) });
+        const beforeText = text.substring(currentIndex, match.start);
+        if (beforeText.trim()) {
+          parts.push({ type: 'text', content: beforeText });
+        }
       }
       
       // Add the formatted match
@@ -368,7 +385,10 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     
     // Add remaining text
     if (currentIndex < text.length) {
-      parts.push({ type: 'text', content: text.substring(currentIndex) });
+      const remainingText = text.substring(currentIndex);
+      if (remainingText.trim()) {
+        parts.push({ type: 'text', content: remainingText });
+      }
     }
     
     // If no matches, return original text with URL linking
@@ -389,8 +409,8 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
             </a>
           );
         }
-        return <span key={idx}>{part}</span>;
-      });
+        return part ? <span key={idx}>{part}</span> : null;
+      }).filter(Boolean);
     }
     
     // Render parts
@@ -426,27 +446,60 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
       )}
       <div className="messages-container">
         {messages.map((message, index) => (
-          <div key={index} className={`message ${message.type}`}>
+          <div key={message.id || index} className={`message ${message.type}`}>
             <div className="message-content">
-              <div className="message-text">{renderFormattedText(message.text)}</div>
-              {message.results && message.results.length > 0 && shouldShowResults(message.text, message.results) && (
-                <div className="message-results">
-                  <div className="results-header">Additional Information:</div>
-                  {message.results.slice(1).map((result, idx) => (
-                    <div key={idx} className="result-item">
-                      <div className="result-topic">{result.topic?.replace(/_/g, ' ')}</div>
-                      <div className="result-preview">{result.content.substring(0, 150)}...</div>
-                      {result.source_url && (
-                        <a href={result.source_url} target="_blank" rel="noopener noreferrer" className="result-link">
-                          Learn more →
-                        </a>
-                      )}
-                    </div>
-                  ))}
+              {message.type === 'bot' && (
+                <div className="message-avatar">
+                  <img 
+                    src="/Black-Kingston-Logo.png" 
+                    alt="City of Kingston" 
+                    className="avatar-logo"
+                  />
                 </div>
               )}
-              <div className="message-time">
-                {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              {message.type === 'user' && (
+                <div className="message-avatar user-avatar">
+                  <span className="material-symbols-outlined">person</span>
+                </div>
+              )}
+              <div className="message-text-wrapper">
+                <div className="message-text">
+                  {message.streaming && !message.text ? (
+                    <div className="loading-dots">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  ) : (
+                    renderFormattedText(message.text)
+                  )}
+                  {message.streaming && message.text && (
+                    <span className="streaming-cursor">▋</span>
+                  )}
+                </div>
+                {message.results && message.results.length > 0 && shouldShowResults(message.text, message.results) && (
+                  <div className="message-results">
+                    <div className="results-header">
+                      <span className="material-symbols-outlined">info</span>
+                      Additional Information
+                    </div>
+                    {message.results.slice(1).map((result, idx) => (
+                      <div key={idx} className="result-item">
+                        <div className="result-topic">{result.topic?.replace(/_/g, ' ')}</div>
+                        <div className="result-preview">{result.content.substring(0, 150)}...</div>
+                        {result.source_url && (
+                          <a href={result.source_url} target="_blank" rel="noopener noreferrer" className="result-link">
+                            <span className="material-symbols-outlined">open_in_new</span>
+                            Learn more
+                          </a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="message-time">
+                  {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </div>
               </div>
             </div>
           </div>
