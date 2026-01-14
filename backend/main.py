@@ -134,63 +134,113 @@ def extract_address(query: str) -> Optional[str]:
                 return address
     return None
 
-def classify_question_intent(query: str) -> Tuple[str, str]:
+def classify_question_intent_ai(query: str) -> Tuple[str, str]:
     """
-    Classify question into EXACTLY ONE intent category.
+    AGENT 1: Use AI to understand and classify the question.
+    This prevents misclassification of unrelated questions.
     Returns: (intent_type, category)
-    - intent_type: 'live_status_lookup' or 'policy_explanatory'
-    - category: specific category for filtering (waste_collection, parking, property_tax, etc.)
+    """
+    try:
+        classification_prompt = f"""Analyze this question and classify it into ONE category. Be very careful - only classify if it's clearly about City of Kingston services.
+
+Question: "{query}"
+
+Categories:
+- live_status_lookup + waste_collection: Questions about WHEN garbage/recycling is collected, collection schedules, "what day is my pickup"
+- policy_explanatory + parking: Questions about parking permits, parking rules, residential parking
+- policy_explanatory + property_tax: Questions about property taxes, tax payments, tax bills
+- policy_explanatory + waste_collection: Questions about WHAT goes in bins, recycling rules, garbage rules, blue box, green bin
+- policy_explanatory + hazardous_waste: Questions about disposing hazardous materials, KARC, batteries
+- policy_explanatory + fire_permits: Questions about fire permits, open air fires, burning
+- policy_explanatory + noise: Questions about noise complaints, quiet hours, noise bylaws
+- out_of_scope: Questions NOT about City of Kingston services (lost items, transit issues, general questions, etc.)
+
+Respond with ONLY the category in format: intent_type|category
+Example: "policy_explanatory|parking" or "out_of_scope|none"
+
+If the question is clearly NOT about City of Kingston services, respond with "out_of_scope|none"
+"""
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a classification system. Respond with ONLY the category in format: intent_type|category"},
+                {"role": "user", "content": classification_prompt}
+            ],
+            temperature=0.1,
+            max_tokens=50
+        )
+        
+        result = response.choices[0].message.content.strip().lower()
+        print(f"[AGENT 1] Classification result: {result}")
+        
+        if "|" in result:
+            intent_type, category = result.split("|")
+            intent_type = intent_type.strip()
+            category = category.strip()
+            
+            if intent_type == "out_of_scope" or category == "none":
+                return ("out_of_scope", "none")
+            
+            return (intent_type, category)
+        
+        # Fallback to old method if AI fails
+        return classify_question_intent_fallback(query)
+        
+    except Exception as e:
+        print(f"[AGENT 1] Error in AI classification: {e}")
+        return classify_question_intent_fallback(query)
+
+def classify_question_intent_fallback(query: str) -> Tuple[str, str]:
+    """
+    Fallback classification using keyword matching (less accurate but reliable)
     """
     query_lower = query.lower()
     
-    # Live lookup indicators (schedule questions)
+    # Live lookup indicators (schedule questions) - be more specific
     live_keywords = [
-        "when is", "when is my", "when does my", "what day is my", "what day is",
-        "today", "tomorrow", "this week", "next week",
-        "my address", "my collection day", "my pickup day",
-        "check for", "look up", "find my"
+        "when is my", "when does my", "what day is my", 
+        "my collection day", "my pickup day",
+        "check my collection", "find my collection"
     ]
     
-    # Address patterns
+    # Address patterns - be more strict
     address_patterns = [
         r"\d+\s+\w+\s+(street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct)",
-        r"division", r"kingston", r"\d+\s+\w+"
     ]
     
-    # Check for live lookup first
-    if any(re.search(pattern, query_lower) for pattern in address_patterns):
-        return ("live_status_lookup", "waste_collection")
+    # Check for live lookup - must have both address pattern AND collection keywords
+    has_address = any(re.search(pattern, query_lower) for pattern in address_patterns)
+    has_collection_keyword = any(keyword in query_lower for keyword in live_keywords) or ("collection" in query_lower and "day" in query_lower)
     
-    if any(keyword in query_lower for keyword in live_keywords):
+    if has_address and has_collection_keyword:
         return ("live_status_lookup", "waste_collection")
     
     # Policy question - classify into specific category
-    # Parking
     if any(term in query_lower for term in ["parking permit", "parking", "permit", "monthly parking", "residential parking"]):
         return ("policy_explanatory", "parking")
     
-    # Property Tax
     if any(term in query_lower for term in ["property tax", "tax payment", "tax due", "tax bill", "pay taxes"]):
         return ("policy_explanatory", "property_tax")
     
-    # Waste Collection Rules
     if any(term in query_lower for term in ["blue box", "grey box", "green bin", "what goes", "recycling", "garbage", "waste", "cart", "collection rules"]):
         return ("policy_explanatory", "waste_collection")
     
-    # Hazardous Waste
     if any(term in query_lower for term in ["hazardous waste", "karc", "dispose", "batteries", "drop off"]):
         return ("policy_explanatory", "hazardous_waste")
     
-    # Fire Permits
     if any(term in query_lower for term in ["fire permit", "open air fire", "burn", "fire pit"]):
         return ("policy_explanatory", "fire_permits")
     
-    # Noise
     if any(term in query_lower for term in ["noise", "quiet hours", "bylaw", "nuisance", "complaint"]):
         return ("policy_explanatory", "noise")
     
-    # Default to waste_collection for general questions
+    # Default - but this should rarely happen with AI classification
     return ("policy_explanatory", "waste_collection")
+
+def classify_question_intent(query: str) -> Tuple[str, str]:
+    """Main classification function - uses AI first, falls back to keyword matching"""
+    return classify_question_intent_ai(query)
 
 def is_greeting_or_simple_query(query: str) -> bool:
     """Detect if query is a greeting or simple interaction that doesn't need additional information"""
@@ -224,6 +274,162 @@ def is_greeting_or_simple_query(query: str) -> bool:
             return True
     
     return False
+
+def translate_text(text: str, target_language: str, source_language: str = "auto") -> str:
+    """
+    Translate text using OpenAI.
+    target_language: "en" or "fr"
+    """
+    if target_language == "en" and source_language == "en":
+        return text  # No translation needed
+    
+    try:
+        # Map language codes to full names for better results
+        lang_map = {
+            "en": "English",
+            "fr": "French"
+        }
+        
+        target_lang_name = lang_map.get(target_language, "English")
+        source_lang_name = lang_map.get(source_language, "auto")
+        
+        if source_language == "auto":
+            prompt = f"Translate the following text to {target_lang_name}. Only return the translation, nothing else:\n\n{text}"
+        else:
+            prompt = f"Translate the following text from {source_lang_name} to {target_lang_name}. Only return the translation, nothing else:\n\n{text}"
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": f"You are a professional translator. Translate accurately and naturally to {target_lang_name}."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=1000
+        )
+        
+        translated = response.choices[0].message.content.strip()
+        print(f"[TRANSLATE] {source_language} -> {target_language}: {text[:50]}... -> {translated[:50]}...")
+        return translated
+        
+    except Exception as e:
+        print(f"[TRANSLATE] Error translating: {e}")
+        return text  # Return original on error
+
+def detect_language(text: str) -> str:
+    """
+    Detect language of text. Returns "en" or "fr"
+    """
+    try:
+        # Quick keyword-based detection (faster than AI)
+        text_lower = text.lower()
+        french_indicators = ["le", "la", "les", "de", "du", "des", "et", "est", "pour", "avec", "dans", "sur", "par", "que", "qui", "quoi", "comment", "où", "quand", "pourquoi"]
+        french_count = sum(1 for word in french_indicators if word in text_lower)
+        
+        if french_count >= 2:
+            return "fr"
+        
+        # Use AI for more accurate detection if needed
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a language detector. Respond with ONLY 'en' or 'fr'."},
+                {"role": "user", "content": f"What language is this text? Respond with ONLY 'en' or 'fr':\n\n{text[:200]}"}
+            ],
+            temperature=0.1,
+            max_tokens=10
+        )
+        
+        detected = response.choices[0].message.content.strip().lower()
+        if detected in ["en", "fr"]:
+            return detected
+        
+        return "en"  # Default to English
+        
+    except Exception as e:
+        print(f"[DETECT] Error detecting language: {e}")
+        return "en"  # Default to English
+
+def check_context_relevance(question: str, context_sample: str, expected_category: str) -> bool:
+    """
+    Quick check if context is relevant before generating answer.
+    Returns True if context seems relevant, False otherwise.
+    """
+    try:
+        # Quick keyword check first (faster)
+        question_lower = question.lower()
+        context_lower = context_sample.lower()
+        
+        # Extract key terms from question
+        key_terms = []
+        for word in question_lower.split():
+            if len(word) > 3 and word not in ["what", "when", "where", "how", "why", "can", "the", "and", "for", "with", "about"]:
+                key_terms.append(word)
+        
+        # Check if any key terms appear in context
+        if key_terms:
+            matches = sum(1 for term in key_terms if term in context_lower)
+            if matches == 0 and len(key_terms) > 2:
+                print(f"[QUICK CHECK] No key terms found in context")
+                return False
+        
+        # If category is out_of_scope, context won't help
+        if expected_category == "none" or "out_of_scope" in expected_category:
+            return False
+        
+        return True
+        
+    except Exception as e:
+        print(f"[QUICK CHECK] Error: {e}")
+        # If check fails, assume context is relevant (let full validation handle it)
+        return True
+
+def validate_answer_relevance(question: str, answer: str, expected_category: str) -> dict:
+    """
+    AGENT 3: Validate that the answer actually answers the question.
+    Returns: {"is_relevant": bool, "confidence": float, "reason": str}
+    """
+    try:
+        validation_prompt = f"""You are a validation system. Check if the answer actually answers the question.
+
+Question: "{question}"
+Expected Category: {expected_category}
+Answer: "{answer}"
+
+Check:
+1. Does the answer address the question asked?
+2. Is the answer about the expected category ({expected_category})?
+3. Does the answer make sense for the question?
+
+Respond with ONLY: YES or NO
+If NO, also provide a brief reason (one sentence).
+
+Format: YES/NO|reason (if NO)
+"""
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a validation system. Respond with YES or NO, optionally followed by |reason"},
+                {"role": "user", "content": validation_prompt}
+            ],
+            temperature=0.1,
+            max_tokens=100
+        )
+        
+        result = response.choices[0].message.content.strip().upper()
+        print(f"[AGENT 3] Validation response: {result}")
+        
+        if result.startswith("YES"):
+            return {"is_relevant": True, "confidence": 0.9, "reason": "Answer is relevant"}
+        else:
+            reason = result.split("|", 1)[1].strip() if "|" in result else "Answer doesn't match question"
+            return {"is_relevant": False, "confidence": 0.8, "reason": reason}
+            
+    except Exception as e:
+        print(f"[AGENT 3] Error in validation: {e}")
+        # If validation fails, be conservative - assume answer is relevant
+        return {"is_relevant": True, "confidence": 0.5, "reason": "Validation error, assuming relevant"}
 
 def extract_address_clean(query: str) -> Optional[str]:
     """Extract and clean address from query"""
@@ -268,6 +474,7 @@ class QueryRequest(BaseModel):
     query: str
     top_k: Optional[int] = 5
     session_id: Optional[str] = None  # For tracking conversation state
+    language: Optional[str] = "en"  # Language preference: "en" or "fr"
 
 
 class QueryResponse(BaseModel):
@@ -302,8 +509,20 @@ async def query_pinecone_stream(request: QueryRequest):
         try:
             import traceback
             print(f"[STREAM] Received query: {request.query}")
+            print(f"[STREAM] Language preference: {request.language}")
             
-            # Classify intent
+            # Detect or use provided language
+            detected_lang = detect_language(request.query) if request.language == "auto" else request.language
+            user_language = detected_lang if request.language == "auto" else request.language
+            
+            # Translate query to English for processing (RAG is in English)
+            original_query = request.query
+            if user_language == "fr":
+                print(f"[STREAM] Translating French query to English...")
+                request.query = translate_text(request.query, "en", "fr")
+                print(f"[STREAM] Translated query: {request.query}")
+            
+            # Classify intent (using English query)
             intent_type, category = classify_question_intent(request.query)
             user_address = extract_address_clean(request.query)
             print(f"[STREAM] Intent: {intent_type}, Category: {category}")
@@ -312,18 +531,28 @@ async def query_pinecone_stream(request: QueryRequest):
             is_greeting = is_greeting_or_simple_query(request.query)
             print(f"[STREAM] Is greeting: {is_greeting}")
             if is_greeting:
-                greeting = "Hello! I'm the City of Kingston 311 assistant. How can I help you today?"
+                greeting_en = "Hello! I'm the City of Kingston 311 assistant. How can I help you today?"
+                greeting = translate_text(greeting_en, user_language, "en") if user_language == "fr" else greeting_en
                 print(f"[STREAM] Returning greeting response")
                 yield f"data: {json.dumps({'type': 'text', 'content': greeting, 'done': True})}\n\n"
+                return
+            
+            # Handle out-of-scope questions
+            if intent_type == "out_of_scope" or category == "none":
+                print(f"[STREAM] Question is out of scope")
+                answer_en = "I'm the City of Kingston 311 assistant, and I can help with questions about city services like waste collection, parking permits, property taxes, and city bylaws. For other issues like lost items or transit services, please contact 311 directly at 613-546-0000."
+                answer = translate_text(answer_en, user_language, "en") if user_language == "fr" else answer_en
+                yield f"data: {json.dumps({'type': 'text', 'content': answer, 'done': True})}\n\n"
                 return
             
             # Handle live lookups
             if intent_type == "live_status_lookup":
                 calendar_url = "https://www.cityofkingston.ca/garbage-and-recycling/collection-calendar/"
                 if user_address:
-                    answer = f"I've noted your address: {user_address}. To find your specific garbage collection day, please visit the City's official waste collection calendar at {calendar_url} and enter your address there. The calendar will show you your exact collection schedule."
+                    answer_en = f"I've noted your address: {user_address}. To find your specific garbage collection day, please visit the City's official waste collection calendar at {calendar_url} and enter your address there. The calendar will show you your exact collection schedule."
                 else:
-                    answer = f"Garbage collection days depend on your address. Please provide your address (e.g., '576 Division Street') and I'll direct you to the City's official collection calendar where you can check your specific schedule: {calendar_url}"
+                    answer_en = f"Garbage collection days depend on your address. Please provide your address (e.g., '576 Division Street') and I'll direct you to the City's official collection calendar where you can check your specific schedule: {calendar_url}"
+                answer = translate_text(answer_en, user_language, "en") if user_language == "fr" else answer_en
                 yield f"data: {json.dumps({'type': 'text', 'content': answer, 'done': True})}\n\n"
                 return
             
@@ -372,56 +601,118 @@ async def query_pinecone_stream(request: QueryRequest):
                 })
                 context_parts.append(content[:1500])
             
-            if context_parts:
-                context = "\n\n".join(context_parts)
-                template = get_prompt_template(category)
-                prompt_text = template.format(context=context, question=request.query)
-                
-                print(f"[STREAM] Starting OpenAI stream...")
-                # Stream using OpenAI directly
-                stream = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant for the City of Kingston 311 service. Do not include mailing address information (PO Box 640) or cheque payment instructions in your responses."},
-                        {"role": "user", "content": prompt_text}
-                    ],
-                    temperature=0.2,
-                    max_tokens=800,
-                    stream=True
-                )
-                
+            # Quick fallback if no context found
+            if not context_parts:
+                print(f"[STREAM] No context found - using quick fallback")
+                fallback_msg_en = "I don't have specific information about that in our knowledge base. Please contact 311 at 613-546-0000 for assistance with this question."
+                fallback_msg = translate_text(fallback_msg_en, user_language, "en") if user_language == "fr" else fallback_msg_en
+                yield f"data: {json.dumps({'type': 'text', 'content': fallback_msg, 'done': True})}\n\n"
+                return
+            
+            # Check if context is relevant - quick validation before generating answer
+            print(f"[STREAM] Checking context relevance...")
+            context_relevance = check_context_relevance(request.query, "\n\n".join(context_parts[:2]), category)
+            if not context_relevance:
+                print(f"[STREAM] Context not relevant - using quick fallback")
+                fallback_msg_en = "I don't have specific information about that in our knowledge base. Please contact 311 at 613-546-0000 for assistance with this question."
+                fallback_msg = translate_text(fallback_msg_en, user_language, "en") if user_language == "fr" else fallback_msg_en
+                yield f"data: {json.dumps({'type': 'text', 'content': fallback_msg, 'done': True})}\n\n"
+                return
+            
+            context = "\n\n".join(context_parts)
+            template = get_prompt_template(category)
+            prompt_text = template.format(context=context, question=request.query)
+            
+            print(f"[STREAM] Starting OpenAI stream...")
+            # Stream using OpenAI directly
+            stream = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant for the City of Kingston 311 service. Do not include mailing address information (PO Box 640) or cheque payment instructions in your responses."},
+                    {"role": "user", "content": prompt_text}
+                ],
+                temperature=0.2,
+                max_tokens=800,
+                stream=True
+            )
+            
                 full_answer = ""
                 chunk_count = 0
-                for chunk in stream:
-                    try:
-                        if chunk.choices and len(chunk.choices) > 0:
-                            delta = chunk.choices[0].delta
-                            if hasattr(delta, 'content') and delta.content:
-                                content = delta.content
-                                full_answer += content
-                                chunk_count += 1
-                                # Send content as-is (frontend will clean spaces)
-                                if content:
-                                    yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
-                    except Exception as chunk_error:
-                        print(f"[STREAM] Error processing chunk: {chunk_error}")
-                        continue
                 
-                print(f"[STREAM] Streamed {chunk_count} chunks, total length: {len(full_answer)}")
-                
-                # Clean up the full answer
-                full_answer = re.sub(r'\s+', ' ', full_answer).strip()
-                # Remove mailing address information
-                full_answer = re.sub(r'Make your cheque payable to City of Kingston and mail it to.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
-                full_answer = re.sub(r'Make your cheque payable.*?PO Box 640.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
-                
-                # Send results metadata
-                yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            else:
-                print(f"[STREAM] No context found")
-                error_msg = "I couldn't find specific information. Please contact 311 at 613-546-0000."
-                yield f"data: {json.dumps({'type': 'text', 'content': error_msg, 'done': True})}\n\n"
+                # If French, we need to collect full answer before translating
+                if user_language == "fr":
+                    # Collect all chunks first
+                    for chunk in stream:
+                        try:
+                            if chunk.choices and len(chunk.choices) > 0:
+                                delta = chunk.choices[0].delta
+                                if hasattr(delta, 'content') and delta.content:
+                                    content = delta.content
+                                    full_answer += content
+                                    chunk_count += 1
+                        except Exception as chunk_error:
+                            print(f"[STREAM] Error processing chunk: {chunk_error}")
+                            continue
+                    
+                    print(f"[STREAM] Collected {chunk_count} chunks, total length: {len(full_answer)}")
+                    
+                    # Clean up the full answer
+                    full_answer = re.sub(r'\s+', ' ', full_answer).strip()
+                    # Remove mailing address information
+                    full_answer = re.sub(r'Make your cheque payable to City of Kingston and mail it to.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
+                    full_answer = re.sub(r'Make your cheque payable.*?PO Box 640.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
+                    
+                    # Translate to French
+                    print(f"[STREAM] Translating answer to French...")
+                    full_answer = translate_text(full_answer, "fr", "en")
+                    
+                    # Stream the translated answer
+                    # Split into words for smoother streaming effect
+                    words = full_answer.split()
+                    for i, word in enumerate(words):
+                        content = word + (" " if i < len(words) - 1 else "")
+                        yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
+                else:
+                    # English - stream normally
+                    for chunk in stream:
+                        try:
+                            if chunk.choices and len(chunk.choices) > 0:
+                                delta = chunk.choices[0].delta
+                                if hasattr(delta, 'content') and delta.content:
+                                    content = delta.content
+                                    full_answer += content
+                                    chunk_count += 1
+                                    # Send content as-is (frontend will clean spaces)
+                                    if content:
+                                        yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
+                        except Exception as chunk_error:
+                            print(f"[STREAM] Error processing chunk: {chunk_error}")
+                            continue
+                    
+                    print(f"[STREAM] Streamed {chunk_count} chunks, total length: {len(full_answer)}")
+                    
+                    # Clean up the full answer
+                    full_answer = re.sub(r'\s+', ' ', full_answer).strip()
+                    # Remove mailing address information
+                    full_answer = re.sub(r'Make your cheque payable to City of Kingston and mail it to.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
+                    full_answer = re.sub(r'Make your cheque payable.*?PO Box 640.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
+            
+            # AGENT 3: Validate the answer actually answers the question
+            print(f"[AGENT 3] Validating answer...")
+            validation_result = validate_answer_relevance(request.query, full_answer, category)
+            print(f"[AGENT 3] Validation result: {validation_result}")
+            
+                if not validation_result["is_relevant"]:
+                    # Answer doesn't match question - send correction message
+                    print(f"[AGENT 3] Answer is not relevant, sending correction")
+                    correction_en = "\n\nI don't have specific information about that in our knowledge base. Please contact 311 at 613-546-0000 for assistance with this question."
+                    correction = translate_text(correction_en, user_language, "en") if user_language == "fr" else correction_en
+                    yield f"data: {json.dumps({'type': 'text', 'content': correction})}\n\n"
+                    formatted_results = []
+            
+            # Send results metadata
+            yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 
         except Exception as e:
             error_msg = str(e)

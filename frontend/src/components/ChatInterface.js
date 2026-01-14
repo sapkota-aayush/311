@@ -5,8 +5,29 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState(initialQuery);
   const [loading, setLoading] = useState(false);
+  const [language, setLanguage] = useState('en'); // 'en' or 'fr'
   const messagesEndRef = useRef(null);
   const initialQuerySubmitted = useRef(false);
+
+  // Translation map for UI text
+  const translations = {
+    en: {
+      placeholder: "Ask me anything about Kingston city services...",
+      disclaimer: "AI can make mistakes. Verify important info at",
+      backToHome: "Back to Home",
+      welcomeTitle: "How can I help you today?",
+      welcomeSubtitle: "Ask about waste schedules, parking bylaws, or upcoming city events.",
+      botName: "Kingston AI Assistant"
+    },
+    fr: {
+      placeholder: "Posez-moi n'importe quelle question sur les services municipaux de Kingston...",
+      disclaimer: "L'IA peut faire des erreurs. Vérifiez les informations importantes sur",
+      backToHome: "Retour à l'accueil",
+      welcomeTitle: "Comment puis-je vous aider aujourd'hui?",
+      welcomeSubtitle: "Posez des questions sur les horaires de collecte, les règlements de stationnement ou les événements à venir.",
+      botName: "Assistant IA de Kingston"
+    }
+  };
 
   // Auto-submit initial query if provided (only once)
   useEffect(() => {
@@ -66,7 +87,8 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
         },
         body: JSON.stringify({
           query: queryText,
-          top_k: 3
+          top_k: 3,
+          language: language // Send language preference to backend
         })
       });
 
@@ -316,21 +338,52 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     return meaningfulResults.length > 0;
   };
 
+  const t = translations[language];
+
   return (
     <div className="chat-interface">
       {onBack && (
         <div className="chat-header">
           <button className="back-button" onClick={onBack}>
+            <img 
+              src="/Black-Kingston-Logo.png" 
+              alt="City of Kingston" 
+              className="header-logo"
+            />
             <span className="material-symbols-outlined">arrow_back</span>
-            Back to Home
+            {t.backToHome}
           </button>
+          <div className="language-selector">
+            <select 
+              value={language} 
+              onChange={(e) => setLanguage(e.target.value)}
+              className="language-select"
+            >
+              <option value="en">English</option>
+              <option value="fr">Français</option>
+            </select>
+          </div>
+        </div>
+      )}
+      {!onBack && (
+        <div className="chat-header-top">
+          <div className="language-selector">
+            <select 
+              value={language} 
+              onChange={(e) => setLanguage(e.target.value)}
+              className="language-select"
+            >
+              <option value="en">English</option>
+              <option value="fr">Français</option>
+            </select>
+          </div>
         </div>
       )}
       <div className="messages-container">
         {messages.length === 0 && (
           <div className="welcome-section">
-            <h1 className="welcome-title">How can I help you today?</h1>
-            <p className="welcome-subtitle">Ask about waste schedules, parking bylaws, or upcoming city events.</p>
+            <h1 className="welcome-title">{t.welcomeTitle}</h1>
+            <p className="welcome-subtitle">{t.welcomeSubtitle}</p>
           </div>
         )}
         {messages.map((message, index) => (
@@ -349,7 +402,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
                       className="avatar-logo"
                     />
                   </div>
-                  <h3 className="bot-name">Kingston AI Assistant</h3>
+                  <h3 className="bot-name">{t.botName}</h3>
                 </div>
                 <div className="bot-message-content">
                   {message.streaming && !message.text ? (
@@ -403,7 +456,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask me anything about Kingston city services..."
+              placeholder={t.placeholder}
               className="chat-input"
               disabled={loading}
             />
@@ -411,7 +464,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
               <span className="material-symbols-outlined">send</span>
             </button>
           </div>
-          <p className="input-disclaimer">AI can make mistakes. Verify important info at <a href="https://www.cityofkingston.ca" target="_blank" rel="noopener noreferrer">kingston.ca</a></p>
+          <p className="input-disclaimer">{t.disclaimer} <a href="https://www.cityofkingston.ca" target="_blank" rel="noopener noreferrer">kingston.ca</a></p>
         </form>
       </div>
     </div>
