@@ -219,15 +219,21 @@ def extract_address_clean(query: str) -> Optional[str]:
     query_clean = re.sub(r"(check for|look up|find|my address is|address is|address:)", "", query_clean)
     query_clean = query_clean.strip()
     
-    # Look for address patterns
-    address_pattern = r"(\d+\s+[\w\s]+(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|division|kingston))"
-    match = re.search(address_pattern, query_clean, re.IGNORECASE)
-    if match:
-        address = match.group(1).strip()
-        # Clean up
-        address = re.sub(r'[.,;!?]+$', '', address)
-        if len(address) > 5:
-            return address
+    # Look for address patterns - improved to catch "division st" and similar
+    address_patterns = [
+        r"(\d+\s+[\w\s]+(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct))",
+        r"(\d+\s+division(?:\s+st(?:reet)?)?)",
+        r"(\d+\s+[\w]+(?:\s+division)?)",
+    ]
+    
+    for pattern in address_patterns:
+        match = re.search(pattern, query_clean, re.IGNORECASE)
+        if match:
+            address = match.group(1).strip()
+            # Clean up
+            address = re.sub(r'[.,;!?]+$', '', address)
+            if len(address) > 5:
+                return address
     
     # Fallback: if it looks like an address (has numbers and words)
     if re.search(r'\d+', query_clean) and len(query_clean.split()) >= 2:
@@ -237,7 +243,7 @@ def extract_address_clean(query: str) -> Optional[str]:
             # Take first 2-4 words that look like address
             address_parts = []
             for word in words[:4]:
-                if word not in ["check", "for", "this", "my", "address", "is"]:
+                if word not in ["check", "for", "this", "my", "address", "is", "the", "a", "an"]:
                     address_parts.append(word)
             if len(address_parts) >= 2:
                 return " ".join(address_parts).strip()
@@ -292,10 +298,11 @@ async def query_pinecone_stream(request: QueryRequest):
             
             # Handle live lookups
             if intent_type == "live_status_lookup":
+                calendar_url = "https://www.cityofkingston.ca/garbage-and-recycling/collection-calendar/"
                 if user_address:
-                    answer = f"I've noted your address: {user_address}. To find your specific garbage collection day, please visit: https://www.cityofkingston.ca/garbage-and-recycling/collection-calendar/"
+                    answer = f"I've noted your address: {user_address}. To find your specific garbage collection day, please visit the City's official waste collection calendar at {calendar_url} and enter your address there. The calendar will show you your exact collection schedule."
                 else:
-                    answer = "Garbage collection days depend on your address. Please provide your address so I can direct you to check your schedule."
+                    answer = f"Garbage collection days depend on your address. Please provide your address (e.g., '576 Division Street') and I'll direct you to the City's official collection calendar where you can check your specific schedule: {calendar_url}"
                 yield f"data: {json.dumps({'type': 'text', 'content': answer, 'done': True})}\n\n"
                 return
             
