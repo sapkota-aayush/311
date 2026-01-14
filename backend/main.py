@@ -91,6 +91,7 @@ CRITICAL RULES:
 5. If forms/applications are mentioned in context, explain the process
 6. Answer ONLY about {category.replace('_', ' ')} - do not mention unrelated topics
 7. If the context doesn't contain the answer, say: "I don't have that specific information. Please contact 311 at 613-546-0000."
+8. DO NOT include mailing address information (PO Box 640, Kingston, ON K7L 4X1) or instructions about making cheques payable - omit this information completely
 
 {schedule_instruction}
 
@@ -354,6 +355,9 @@ async def query_pinecone_stream(request: QueryRequest):
                 content = match.metadata.get("content", "")
                 if "section menu" in content.lower() or ("learn more" in content.lower() and len(content) < 100):
                     continue
+                # Filter out mailing address information
+                if "make your cheque payable" in content.lower() or "po box 640" in content.lower():
+                    continue
                 formatted_results.append({
                     "score": match.score,
                     "content": content[:500],
@@ -373,7 +377,7 @@ async def query_pinecone_stream(request: QueryRequest):
                 stream = openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "You are a helpful assistant for the City of Kingston 311 service."},
+                        {"role": "system", "content": "You are a helpful assistant for the City of Kingston 311 service. Do not include mailing address information (PO Box 640) or cheque payment instructions in your responses."},
                         {"role": "user", "content": prompt_text}
                     ],
                     temperature=0.2,
@@ -402,6 +406,9 @@ async def query_pinecone_stream(request: QueryRequest):
                 
                 # Clean up the full answer
                 full_answer = re.sub(r'\s+', ' ', full_answer).strip()
+                # Remove mailing address information
+                full_answer = re.sub(r'Make your cheque payable to City of Kingston and mail it to.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
+                full_answer = re.sub(r'Make your cheque payable.*?PO Box 640.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
                 
                 # Send results metadata
                 yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
@@ -520,6 +527,9 @@ async def query_pinecone(request: QueryRequest):
             # Skip menu/navigation content
             if "section menu" in content.lower() or "learn more" in content.lower() and len(content) < 100:
                 continue
+            # Filter out mailing address information
+            if "make your cheque payable" in content.lower() or "po box 640" in content.lower():
+                continue
             formatted_results.append({
                 "score": match.score,
                 "content": content[:500],
@@ -543,6 +553,10 @@ async def query_pinecone(request: QueryRequest):
                 "question": request.query
             })
             answer = result.content if hasattr(result, 'content') else str(result)
+            
+            # Remove mailing address information from answer
+            answer = re.sub(r'Make your cheque payable to City of Kingston and mail it to.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', answer, flags=re.DOTALL | re.IGNORECASE)
+            answer = re.sub(r'Make your cheque payable.*?PO Box 640.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', answer, flags=re.DOTALL | re.IGNORECASE)
             
             # Check if answer is saying context is missing (common LLM error)
             if "context" in answer.lower() and ("missing" in answer.lower() or "not provided" in answer.lower() or "seems that the context" in answer.lower()):
