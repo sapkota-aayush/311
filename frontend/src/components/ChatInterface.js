@@ -212,29 +212,205 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     return meaningfulResults.length > 0;
   };
 
-  // Function to convert URLs in text to clickable links
-  const renderTextWithLinks = (text) => {
+  // Function to render formatted text with markdown support
+  const renderFormattedText = (text) => {
     if (!text) return text;
     
-    // URL regex pattern
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const parts = text.split(urlRegex);
+    // Split by lines to handle lists and formatting
+    const lines = text.split('\n');
+    const elements = [];
+    let listItems = [];
+    let inCodeBlock = false;
+    let codeBlockContent = [];
     
-    return parts.map((part, index) => {
-      if (urlRegex.test(part)) {
+    lines.forEach((line, lineIndex) => {
+      // Handle code blocks
+      if (line.trim().startsWith('```')) {
+        if (inCodeBlock) {
+          // End code block
+          elements.push(
+            <pre key={`code-${lineIndex}`} className="message-code-block">
+              <code>{codeBlockContent.join('\n')}</code>
+            </pre>
+          );
+          codeBlockContent = [];
+          inCodeBlock = false;
+        } else {
+          // Start code block
+          inCodeBlock = true;
+        }
+        return;
+      }
+      
+      if (inCodeBlock) {
+        codeBlockContent.push(line);
+        return;
+      }
+      
+      // Process numbered lists
+      const numberedListMatch = line.match(/^(\d+)\.\s+(.+)$/);
+      if (numberedListMatch) {
+        listItems.push({ type: 'numbered', content: numberedListMatch[2] });
+        return;
+      }
+      
+      // Process bullet lists
+      const bulletListMatch = line.match(/^[-*]\s+(.+)$/);
+      if (bulletListMatch) {
+        listItems.push({ type: 'bullet', content: bulletListMatch[1] });
+        return;
+      }
+      
+      // If we have accumulated list items and hit a non-list line, render them
+      if (listItems.length > 0) {
+        const listType = listItems[0].type === 'numbered' ? 'ol' : 'ul';
+        elements.push(
+          React.createElement(
+            listType,
+            { key: `list-${lineIndex}`, className: 'message-list' },
+            listItems.map((item, idx) => (
+              <li key={idx}>{formatInlineMarkdown(item.content)}</li>
+            ))
+          )
+        );
+        listItems = [];
+      }
+      
+      // Process regular lines
+      if (line.trim()) {
+        elements.push(
+          <p key={`line-${lineIndex}`} className="message-paragraph">
+            {formatInlineMarkdown(line)}
+          </p>
+        );
+      } else {
+        // Empty line for spacing
+        elements.push(<br key={`br-${lineIndex}`} />);
+      }
+    });
+    
+    // Handle any remaining list items
+    if (listItems.length > 0) {
+      const listType = listItems[0].type === 'numbered' ? 'ol' : 'ul';
+      elements.push(
+        React.createElement(
+          listType,
+          { key: 'list-final', className: 'message-list' },
+          listItems.map((item, idx) => (
+            <li key={idx}>{formatInlineMarkdown(item.content)}</li>
+          ))
+        )
+      );
+    }
+    
+    return elements.length > 0 ? elements : text;
+  };
+  
+  // Function to format inline markdown (bold, links, etc.)
+  const formatInlineMarkdown = (text) => {
+    if (!text) return text;
+    
+    const parts = [];
+    let currentIndex = 0;
+    
+    // Pattern to match: **bold**, URLs, or regular text
+    const patterns = [
+      { regex: /\*\*(.+?)\*\*/g, type: 'bold' },
+      { regex: /(https?:\/\/[^\s\)]+)/g, type: 'url' }
+    ];
+    
+    // Find all matches
+    const matches = [];
+    patterns.forEach(({ regex, type }) => {
+      let match;
+      regex.lastIndex = 0;
+      while ((match = regex.exec(text)) !== null) {
+        matches.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          type,
+          content: match[1] || match[0],
+          fullMatch: match[0]
+        });
+      }
+    });
+    
+    // Sort matches by position
+    matches.sort((a, b) => a.start - b.start);
+    
+    // Remove overlapping matches (prefer bold over URLs if they overlap)
+    const filteredMatches = [];
+    matches.forEach(match => {
+      const overlaps = filteredMatches.some(existing => 
+        (match.start < existing.end && match.end > existing.start)
+      );
+      if (!overlaps) {
+        filteredMatches.push(match);
+      }
+    });
+    
+    // Build the parts array
+    filteredMatches.forEach((match, idx) => {
+      // Add text before match
+      if (match.start > currentIndex) {
+        parts.push({ type: 'text', content: text.substring(currentIndex, match.start) });
+      }
+      
+      // Add the formatted match
+      if (match.type === 'bold') {
+        parts.push({ type: 'bold', content: match.content });
+      } else if (match.type === 'url') {
+        parts.push({ type: 'url', content: match.content });
+      }
+      
+      currentIndex = match.end;
+    });
+    
+    // Add remaining text
+    if (currentIndex < text.length) {
+      parts.push({ type: 'text', content: text.substring(currentIndex) });
+    }
+    
+    // If no matches, return original text with URL linking
+    if (parts.length === 0) {
+      const urlRegex = /(https?:\/\/[^\s\)]+)/g;
+      const urlParts = text.split(urlRegex);
+      return urlParts.map((part, idx) => {
+        if (urlRegex.test(part)) {
+          return (
+            <a
+              key={idx}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="message-link"
+            >
+              {part}
+            </a>
+          );
+        }
+        return <span key={idx}>{part}</span>;
+      });
+    }
+    
+    // Render parts
+    return parts.map((part, idx) => {
+      if (part.type === 'bold') {
+        return <strong key={idx}>{part.content}</strong>;
+      } else if (part.type === 'url') {
         return (
           <a
-            key={index}
-            href={part}
+            key={idx}
+            href={part.content}
             target="_blank"
             rel="noopener noreferrer"
             className="message-link"
           >
-            {part}
+            {part.content}
           </a>
         );
       }
-      return <span key={index}>{part}</span>;
+      return <span key={idx}>{part.content}</span>;
     });
   };
 
@@ -252,7 +428,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
         {messages.map((message, index) => (
           <div key={index} className={`message ${message.type}`}>
             <div className="message-content">
-              <div className="message-text">{renderTextWithLinks(message.text)}</div>
+              <div className="message-text">{renderFormattedText(message.text)}</div>
               {message.results && message.results.length > 0 && shouldShowResults(message.text, message.results) && (
                 <div className="message-results">
                   <div className="results-header">Additional Information:</div>
