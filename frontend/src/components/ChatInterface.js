@@ -2,13 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import './ChatInterface.css';
 
 const ChatInterface = ({ initialQuery = '', onBack }) => {
-  const [messages, setMessages] = useState([
-    {
-      type: 'bot',
-      text: "Hello! I'm the City of Kingston 311 assistant. I can help answer questions about city services, policies, and information. What can I help you with today?",
-      timestamp: new Date()
-    }
-  ]);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState(initialQuery);
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
@@ -16,7 +10,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
 
   // Auto-submit initial query if provided (only once)
   useEffect(() => {
-    if (initialQuery && !initialQuerySubmitted.current && messages.length === 1) {
+    if (initialQuery && !initialQuerySubmitted.current && messages.length === 0) {
       initialQuerySubmitted.current = true;
       setTimeout(() => {
         handleSubmit(null, initialQuery);
@@ -41,7 +35,8 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     const userMessage = {
       type: 'user',
       text: queryText,
-      timestamp: new Date()
+      timestamp: new Date(),
+      id: Date.now()
     };
 
     setMessages(prev => [...prev, userMessage]);
@@ -49,7 +44,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     setLoading(true);
 
     // Create a placeholder bot message for streaming
-    const botMessageId = Date.now();
+    const botMessageId = Date.now() + 1;
     const botMessage = {
       type: 'bot',
       text: '',
@@ -98,10 +93,8 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
               const data = JSON.parse(line.slice(6));
               
               if (data.type === 'text' && data.content) {
-                // Accumulate content without aggressive cleaning (preserve formatting)
                 accumulatedTextRef.current += data.content;
                 
-                // Update the streaming message
                 setMessages(prev => prev.map(msg => 
                   msg.id === botMessageId 
                     ? { ...msg, text: accumulatedTextRef.current }
@@ -139,19 +132,14 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
 
     } catch (error) {
       console.error('Error querying backend:', error);
-      console.error('Error details:', {
-        message: error.message,
-        stack: error.stack,
-        baseUrl: process.env.REACT_APP_API_URL || 'http://localhost:8000'
-      });
       
-      // Remove the streaming message and add error message
       setMessages(prev => {
         const filtered = prev.filter(msg => msg.id !== botMessageId);
         filtered.push({
           type: 'bot',
-          text: `Sorry, I'm having trouble connecting right now. Error: ${error.message}. Please check if the backend is running on http://localhost:8000 or contact 311 at 613-546-0000.`,
-          timestamp: new Date()
+          text: `Sorry, I'm having trouble connecting right now. Error: ${error.message}. Please check if the backend is running or contact 311 at 613-546-0000.`,
+          timestamp: new Date(),
+          id: botMessageId
         });
         return filtered;
       });
@@ -160,14 +148,151 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     }
   };
 
+  // Clean and format text
+  const renderFormattedText = (text) => {
+    if (!text) return text;
+    
+    const lines = text.split('\n');
+    const elements = [];
+    let currentList = [];
+    let listType = null;
+    let keyCounter = 0;
+    
+    const flushList = () => {
+      if (currentList.length > 0) {
+        const Tag = listType === 'numbered' ? 'ol' : 'ul';
+        elements.push(
+          <Tag key={`list-${keyCounter++}`} className="message-list">
+            {currentList.map((item, idx) => (
+              <li key={idx}>{formatText(item)}</li>
+            ))}
+          </Tag>
+        );
+        currentList = [];
+        listType = null;
+      }
+    };
+    
+    lines.forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        flushList();
+        return;
+      }
+      
+      // Clean up asterisks from headings (e.g., *Paymentus** -> Paymentus:)
+      let cleaned = trimmed.replace(/^\*+|\*+$/g, '').trim();
+      
+      // Detect headings (ends with colon, not too long)
+      if (cleaned.endsWith(':') && cleaned.length < 80) {
+        flushList();
+        const headingText = cleaned.slice(0, -1).trim();
+        elements.push(
+          <h3 key={`heading-${keyCounter++}`} className="message-heading">
+            {formatText(headingText)}
+          </h3>
+        );
+        return;
+      }
+      
+      // Detect numbered lists
+      const numberedMatch = cleaned.match(/^(\d+)\.\s*(.+)$/);
+      if (numberedMatch) {
+        flushList();
+        listType = 'numbered';
+        currentList.push(numberedMatch[2].trim());
+        return;
+      }
+      
+      // Detect bullet lists
+      if (cleaned.match(/^[-*•]\s+/)) {
+        flushList();
+        listType = 'bullet';
+        const content = cleaned.replace(/^[-*•]\s+/, '').trim();
+        if (content) {
+          currentList.push(content);
+        }
+        return;
+      }
+      
+      // Regular paragraph
+      flushList();
+      if (cleaned) {
+        elements.push(
+          <p key={`para-${keyCounter++}`} className="message-paragraph">
+            {formatText(cleaned)}
+          </p>
+        );
+      }
+    });
+    
+    flushList();
+    return elements.length > 0 ? elements : text;
+  };
+  
+  // Simple text formatter for bold and links
+  const formatText = (text) => {
+    if (!text) return text;
+    
+    const parts = [];
+    let lastIndex = 0;
+    
+    // Match bold text (**text**)
+    const boldRegex = /\*\*(.+?)\*\*/g;
+    let match;
+    
+    while ((match = boldRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push({ type: 'text', content: text.substring(lastIndex, match.index) });
+      }
+      parts.push({ type: 'bold', content: match[1] });
+      lastIndex = match.index + match[0].length;
+    }
+    
+    if (lastIndex < text.length) {
+      parts.push({ type: 'text', content: text.substring(lastIndex) });
+    }
+    
+    if (parts.length === 0) {
+      parts.push({ type: 'text', content: text });
+    }
+    
+    const result = [];
+    parts.forEach((part, idx) => {
+      if (part.type === 'bold') {
+        result.push(<strong key={idx}>{part.content}</strong>);
+      } else {
+        // Check for URLs in text parts
+        const urlRegex = /(https?:\/\/[^\s)]+)/g;
+        const urlParts = part.content.split(urlRegex);
+        urlParts.forEach((urlPart, urlIdx) => {
+          if (urlRegex.test(urlPart)) {
+            result.push(
+              <a
+                key={`${idx}-${urlIdx}`}
+                href={urlPart}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="message-link"
+              >
+                {urlPart}
+              </a>
+            );
+          } else if (urlPart) {
+            result.push(<span key={`${idx}-${urlIdx}`}>{urlPart}</span>);
+          }
+        });
+      }
+    });
+    
+    return result.length > 0 ? result : text;
+  };
 
   // Function to determine if results should be shown
   const shouldShowResults = (messageText, results) => {
     if (!messageText || !results || results.length === 0) return false;
     
     const textLower = messageText.toLowerCase();
-    
-    // Don't show results for greetings
     const greetingPatterns = [
       "hi", "hello", "hey", "how can i help", "what can i help",
       "how are you", "good morning", "good afternoon", "good evening"
@@ -177,232 +302,18 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
       return false;
     }
     
-    // Don't show if message is too short (likely greeting)
     if (messageText.split(' ').length < 10 && textLower.includes('help')) {
       return false;
     }
     
-    // Only show if there are meaningful results (not just navigation/menu items)
     const meaningfulResults = results.filter(result => {
       const content = (result.content || '').toLowerCase();
-      // Filter out menu/navigation content
       return !content.includes('section menu') && 
              !content.includes('learn more') &&
-             content.length > 50; // Must have substantial content
+             content.length > 50;
     });
     
     return meaningfulResults.length > 0;
-  };
-
-  // Function to render formatted text with markdown support
-  const renderFormattedText = (text) => {
-    if (!text) return text;
-    
-    // Split by lines to handle lists and formatting
-    const lines = text.split('\n');
-    const elements = [];
-    let listItems = [];
-    let inCodeBlock = false;
-    let codeBlockContent = [];
-    
-    lines.forEach((line, lineIndex) => {
-      // Handle code blocks
-      if (line.trim().startsWith('```')) {
-        if (inCodeBlock) {
-          // End code block
-          elements.push(
-            <pre key={`code-${lineIndex}`} className="message-code-block">
-              <code>{codeBlockContent.join('\n')}</code>
-            </pre>
-          );
-          codeBlockContent = [];
-          inCodeBlock = false;
-        } else {
-          // Start code block
-          inCodeBlock = true;
-        }
-        return;
-      }
-      
-      if (inCodeBlock) {
-        codeBlockContent.push(line);
-        return;
-      }
-      
-      // Process numbered lists
-      const numberedListMatch = line.match(/^(\d+)\.\s+(.+)$/);
-      if (numberedListMatch) {
-        listItems.push({ type: 'numbered', content: numberedListMatch[2] });
-        return;
-      }
-      
-      // Process bullet lists
-      const bulletListMatch = line.match(/^[-*]\s+(.+)$/);
-      if (bulletListMatch) {
-        listItems.push({ type: 'bullet', content: bulletListMatch[1] });
-        return;
-      }
-      
-      // If we have accumulated list items and hit a non-list line, render them
-      if (listItems.length > 0) {
-        const listType = listItems[0].type === 'numbered' ? 'ol' : 'ul';
-        elements.push(
-          React.createElement(
-            listType,
-            { key: `list-${lineIndex}`, className: 'message-list' },
-            listItems.map((item, idx) => (
-              <li key={idx}>{formatInlineMarkdown(item.content)}</li>
-            ))
-          )
-        );
-        listItems = [];
-      }
-      
-      // Process regular lines
-      if (line.trim()) {
-        elements.push(
-          <p key={`line-${lineIndex}`} className="message-paragraph">
-            {formatInlineMarkdown(line)}
-          </p>
-        );
-      } else {
-        // Empty line for spacing
-        elements.push(<br key={`br-${lineIndex}`} />);
-      }
-    });
-    
-    // Handle any remaining list items
-    if (listItems.length > 0) {
-      const listType = listItems[0].type === 'numbered' ? 'ol' : 'ul';
-      elements.push(
-        React.createElement(
-          listType,
-          { key: 'list-final', className: 'message-list' },
-          listItems.map((item, idx) => (
-            <li key={idx}>{formatInlineMarkdown(item.content)}</li>
-          ))
-        )
-      );
-    }
-    
-    return elements.length > 0 ? elements : text;
-  };
-  
-  // Function to format inline markdown (bold, links, etc.) - with space cleanup
-  const formatInlineMarkdown = (text) => {
-    if (!text) return text;
-    
-    // Clean up extra spaces first (but preserve single spaces)
-    text = text.replace(/\s+/g, ' ').trim();
-    
-    const parts = [];
-    let currentIndex = 0;
-    
-    // Pattern to match: **bold**, URLs, or regular text
-    const patterns = [
-      { regex: /\*\*(.+?)\*\*/g, type: 'bold' },
-      { regex: /(https?:\/\/[^\s)]+)/g, type: 'url' }
-    ];
-    
-    // Find all matches
-    const matches = [];
-    patterns.forEach(({ regex, type }) => {
-      let match;
-      regex.lastIndex = 0;
-      while ((match = regex.exec(text)) !== null) {
-        matches.push({
-          start: match.index,
-          end: match.index + match[0].length,
-          type,
-          content: match[1] || match[0],
-          fullMatch: match[0]
-        });
-      }
-    });
-    
-    // Sort matches by position
-    matches.sort((a, b) => a.start - b.start);
-    
-    // Remove overlapping matches (prefer bold over URLs if they overlap)
-    const filteredMatches = [];
-    matches.forEach(match => {
-      const overlaps = filteredMatches.some(existing => 
-        (match.start < existing.end && match.end > existing.start)
-      );
-      if (!overlaps) {
-        filteredMatches.push(match);
-      }
-    });
-    
-    // Build the parts array
-    filteredMatches.forEach((match) => {
-      // Add text before match
-      if (match.start > currentIndex) {
-        const beforeText = text.substring(currentIndex, match.start);
-        if (beforeText.trim()) {
-          parts.push({ type: 'text', content: beforeText });
-        }
-      }
-      
-      // Add the formatted match
-      if (match.type === 'bold') {
-        parts.push({ type: 'bold', content: match.content });
-      } else if (match.type === 'url') {
-        parts.push({ type: 'url', content: match.content });
-      }
-      
-      currentIndex = match.end;
-    });
-    
-    // Add remaining text
-    if (currentIndex < text.length) {
-      const remainingText = text.substring(currentIndex);
-      if (remainingText.trim()) {
-        parts.push({ type: 'text', content: remainingText });
-      }
-    }
-    
-    // If no matches, return original text with URL linking
-    if (parts.length === 0) {
-      const urlRegex = /(https?:\/\/[^\s)]+)/g;
-      const urlParts = text.split(urlRegex);
-      return urlParts.map((part, idx) => {
-        if (urlRegex.test(part)) {
-          return (
-            <a
-              key={idx}
-              href={part}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="message-link"
-            >
-              {part}
-            </a>
-          );
-        }
-        return part ? <span key={idx}>{part}</span> : null;
-      }).filter(Boolean);
-    }
-    
-    // Render parts
-    return parts.map((part, idx) => {
-      if (part.type === 'bold') {
-        return <strong key={idx}>{part.content}</strong>;
-      } else if (part.type === 'url') {
-        return (
-          <a
-            key={idx}
-            href={part.content}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="message-link"
-          >
-            {part.content}
-          </a>
-        );
-      }
-      return <span key={idx}>{part.content}</span>;
-    });
   };
 
   return (
@@ -416,92 +327,93 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
         </div>
       )}
       <div className="messages-container">
+        {messages.length === 0 && (
+          <div className="welcome-section">
+            <h1 className="welcome-title">How can I help you today?</h1>
+            <p className="welcome-subtitle">Ask about waste schedules, parking bylaws, or upcoming city events.</p>
+          </div>
+        )}
         {messages.map((message, index) => (
           <div key={message.id || index} className={`message ${message.type}`}>
-            <div className="message-content">
-              {message.type === 'bot' && (
-                <div className="message-avatar">
-                  <img 
-                    src="/Black-Kingston-Logo.png" 
-                    alt="City of Kingston" 
-                    className="avatar-logo"
-                  />
+            {message.type === 'user' ? (
+              <div className="user-message-bubble">
+                <p>{message.text}</p>
+              </div>
+            ) : (
+              <div className="bot-message-card">
+                <div className="bot-message-header">
+                  <div className="bot-avatar">
+                    <img 
+                      src="/Black-Kingston-Logo.png" 
+                      alt="City of Kingston" 
+                      className="avatar-logo"
+                    />
+                  </div>
+                  <h3 className="bot-name">Kingston AI Assistant</h3>
                 </div>
-              )}
-              {message.type === 'user' && (
-                <div className="message-avatar user-avatar">
-                  <span className="material-symbols-outlined">person</span>
-                </div>
-              )}
-              <div className="message-text-wrapper">
-                <div className="message-text">
+                <div className="bot-message-content">
                   {message.streaming && !message.text ? (
                     <div className="loading-dots">
                       <span></span>
                       <span></span>
                       <span></span>
                     </div>
-                  ) : (
-                    renderFormattedText(message.text)
-                  )}
-                  {message.streaming && message.text && (
-                    <span className="streaming-cursor">▋</span>
-                  )}
-                </div>
-                {message.results && message.results.length > 0 && shouldShowResults(message.text, message.results) && (
-                  <div className="message-results">
-                    <div className="results-header">
-                      <span className="material-symbols-outlined">info</span>
-                      Additional Information
-                    </div>
-                    {message.results.slice(1).map((result, idx) => (
-                      <div key={idx} className="result-item">
-                        <div className="result-topic">{result.topic?.replace(/_/g, ' ')}</div>
-                        <div className="result-preview">{result.content.substring(0, 150)}...</div>
-                        {result.source_url && (
-                          <a href={result.source_url} target="_blank" rel="noopener noreferrer" className="result-link">
-                            <span className="material-symbols-outlined">open_in_new</span>
-                            Learn more
-                          </a>
+                  ) : message.text ? (
+                    <>
+                      <div className="message-text-content">
+                        {renderFormattedText(message.text)}
+                        {message.streaming && (
+                          <span className="streaming-cursor">▋</span>
                         )}
                       </div>
-                    ))}
+                    </>
+                  ) : null}
+                </div>
+                {message.results && message.results.length > 0 && shouldShowResults(message.text, message.results) && (
+                  <div className="message-sources">
+                    <p className="sources-label">Official Sources</p>
+                    <div className="sources-list">
+                      {message.results.filter(r => r.source_url).slice(0, 3).map((result, idx) => (
+                        <a 
+                          key={idx}
+                          href={result.source_url} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="source-link"
+                        >
+                          <span className="material-symbols-outlined">link</span>
+                          <span>{result.topic?.replace(/_/g, ' ') || 'Learn more'}</span>
+                        </a>
+                      ))}
+                    </div>
                   </div>
                 )}
-                <div className="message-time">
-                  {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </div>
               </div>
-            </div>
+            )}
           </div>
         ))}
-        {loading && (
-          <div className="message bot">
-            <div className="message-content">
-              <div className="loading-dots">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
-            </div>
-          </div>
-        )}
         <div ref={messagesEndRef} />
       </div>
 
-      <form onSubmit={handleSubmit} className="input-form">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type your question here..."
-          className="chat-input"
-          disabled={loading}
-        />
-        <button type="submit" className="send-button" disabled={loading || !input.trim()}>
-          Send
-        </button>
-      </form>
+      <div className="input-container">
+        <form onSubmit={handleSubmit} className="input-form">
+          <div className="input-wrapper">
+            <span className="input-icon material-symbols-outlined">chat_bubble</span>
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask me anything about Kingston city services..."
+              className="chat-input"
+              disabled={loading}
+            />
+            <button type="submit" className="send-button" disabled={loading || !input.trim()}>
+              <span className="material-symbols-outlined">send</span>
+            </button>
+          </div>
+          <p className="input-disclaimer">AI can make mistakes. Verify important info at <a href="https://www.cityofkingston.ca" target="_blank" rel="noopener noreferrer">kingston.ca</a></p>
+        </form>
+      </div>
     </div>
   );
 };
