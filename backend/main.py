@@ -3,7 +3,7 @@ FastAPI Backend for City of Kingston 311 Chatbot
 Using LangChain for RAG pipeline
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
@@ -28,18 +28,22 @@ app = FastAPI(title="City of Kingston 311 Chatbot API")
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
 
 # Default behavior: if empty or "*", allow all origins (for production)
+# Note: When allow_credentials=True, we can't use ["*"], so we need to handle it differently
 if not allowed_origins_env or allowed_origins_env == "*":
+    # For wildcard, we'll allow credentials=False or handle it in the OPTIONS handler
     allowed_origins = ["*"]
-    print(f"[CORS] Allowing all origins (wildcard enabled)")
+    use_credentials = False  # Can't use credentials with wildcard
+    print(f"[CORS] Allowing all origins (wildcard enabled, credentials disabled)")
 else:
     # Parse comma-separated list
     allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+    use_credentials = True
     print(f"[CORS] Allowed origins: {allowed_origins}")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_credentials=use_credentials,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -498,9 +502,36 @@ async def root():
 
 
 @app.options("/query/stream")
-async def options_query_stream():
+async def options_query_stream(request: Request):
     """Handle CORS preflight for streaming endpoint"""
-    return Response(status_code=200)
+    # Get origin from request
+    origin = request.headers.get("origin", "*")
+    
+    # If wildcard is allowed, use the request origin
+    if allowed_origins == ["*"]:
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "3600",
+            }
+        )
+    # Otherwise check if origin is allowed
+    elif origin in allowed_origins:
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Max-Age": "3600",
+            }
+        )
+    else:
+        return Response(status_code=403)
 
 @app.post("/query/stream")
 async def query_pinecone_stream(request: QueryRequest):
@@ -636,79 +667,79 @@ async def query_pinecone_stream(request: QueryRequest):
                 stream=True
             )
             
-                full_answer = ""
-                chunk_count = 0
+            full_answer = ""
+            chunk_count = 0
+            
+            # If French, we need to collect full answer before translating
+            if user_language == "fr":
+                # Collect all chunks first
+                for chunk in stream:
+                    try:
+                        if chunk.choices and len(chunk.choices) > 0:
+                            delta = chunk.choices[0].delta
+                            if hasattr(delta, 'content') and delta.content:
+                                content = delta.content
+                                full_answer += content
+                                chunk_count += 1
+                    except Exception as chunk_error:
+                        print(f"[STREAM] Error processing chunk: {chunk_error}")
+                        continue
                 
-                # If French, we need to collect full answer before translating
-                if user_language == "fr":
-                    # Collect all chunks first
-                    for chunk in stream:
-                        try:
-                            if chunk.choices and len(chunk.choices) > 0:
-                                delta = chunk.choices[0].delta
-                                if hasattr(delta, 'content') and delta.content:
-                                    content = delta.content
-                                    full_answer += content
-                                    chunk_count += 1
-                        except Exception as chunk_error:
-                            print(f"[STREAM] Error processing chunk: {chunk_error}")
-                            continue
-                    
-                    print(f"[STREAM] Collected {chunk_count} chunks, total length: {len(full_answer)}")
-                    
-                    # Clean up the full answer
-                    full_answer = re.sub(r'\s+', ' ', full_answer).strip()
-                    # Remove mailing address information
-                    full_answer = re.sub(r'Make your cheque payable to City of Kingston and mail it to.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
-                    full_answer = re.sub(r'Make your cheque payable.*?PO Box 640.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
-                    
-                    # Translate to French
-                    print(f"[STREAM] Translating answer to French...")
-                    full_answer = translate_text(full_answer, "fr", "en")
-                    
-                    # Stream the translated answer
-                    # Split into words for smoother streaming effect
-                    words = full_answer.split()
-                    for i, word in enumerate(words):
-                        content = word + (" " if i < len(words) - 1 else "")
-                        yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
-                else:
-                    # English - stream normally
-                    for chunk in stream:
-                        try:
-                            if chunk.choices and len(chunk.choices) > 0:
-                                delta = chunk.choices[0].delta
-                                if hasattr(delta, 'content') and delta.content:
-                                    content = delta.content
-                                    full_answer += content
-                                    chunk_count += 1
-                                    # Send content as-is (frontend will clean spaces)
-                                    if content:
-                                        yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
-                        except Exception as chunk_error:
-                            print(f"[STREAM] Error processing chunk: {chunk_error}")
-                            continue
-                    
-                    print(f"[STREAM] Streamed {chunk_count} chunks, total length: {len(full_answer)}")
-                    
-                    # Clean up the full answer
-                    full_answer = re.sub(r'\s+', ' ', full_answer).strip()
-                    # Remove mailing address information
-                    full_answer = re.sub(r'Make your cheque payable to City of Kingston and mail it to.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
-                    full_answer = re.sub(r'Make your cheque payable.*?PO Box 640.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
+                print(f"[STREAM] Collected {chunk_count} chunks, total length: {len(full_answer)}")
+                
+                # Clean up the full answer
+                full_answer = re.sub(r'\s+', ' ', full_answer).strip()
+                # Remove mailing address information
+                full_answer = re.sub(r'Make your cheque payable to City of Kingston and mail it to.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
+                full_answer = re.sub(r'Make your cheque payable.*?PO Box 640.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
+                
+                # Translate to French
+                print(f"[STREAM] Translating answer to French...")
+                full_answer = translate_text(full_answer, "fr", "en")
+                
+                # Stream the translated answer
+                # Split into words for smoother streaming effect
+                words = full_answer.split()
+                for i, word in enumerate(words):
+                    content = word + (" " if i < len(words) - 1 else "")
+                    yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
+            else:
+                # English - stream normally
+                for chunk in stream:
+                    try:
+                        if chunk.choices and len(chunk.choices) > 0:
+                            delta = chunk.choices[0].delta
+                            if hasattr(delta, 'content') and delta.content:
+                                content = delta.content
+                                full_answer += content
+                                chunk_count += 1
+                                # Send content as-is (frontend will clean spaces)
+                                if content:
+                                    yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
+                    except Exception as chunk_error:
+                        print(f"[STREAM] Error processing chunk: {chunk_error}")
+                        continue
+                
+                print(f"[STREAM] Streamed {chunk_count} chunks, total length: {len(full_answer)}")
+                
+                # Clean up the full answer
+                full_answer = re.sub(r'\s+', ' ', full_answer).strip()
+                # Remove mailing address information
+                full_answer = re.sub(r'Make your cheque payable to City of Kingston and mail it to.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
+                full_answer = re.sub(r'Make your cheque payable.*?PO Box 640.*?Kingston, ON K7L 4X1.*?(?=\n\n|\Z)', '', full_answer, flags=re.DOTALL | re.IGNORECASE)
             
             # AGENT 3: Validate the answer actually answers the question
             print(f"[AGENT 3] Validating answer...")
             validation_result = validate_answer_relevance(request.query, full_answer, category)
             print(f"[AGENT 3] Validation result: {validation_result}")
             
-                if not validation_result["is_relevant"]:
-                    # Answer doesn't match question - send correction message
-                    print(f"[AGENT 3] Answer is not relevant, sending correction")
-                    correction_en = "\n\nI don't have specific information about that in our knowledge base. Please contact 311 at 613-546-0000 for assistance with this question."
-                    correction = translate_text(correction_en, user_language, "en") if user_language == "fr" else correction_en
-                    yield f"data: {json.dumps({'type': 'text', 'content': correction})}\n\n"
-                    formatted_results = []
+            if not validation_result["is_relevant"]:
+                # Answer doesn't match question - send correction message
+                print(f"[AGENT 3] Answer is not relevant, sending correction")
+                correction_en = "\n\nI don't have specific information about that in our knowledge base. Please contact 311 at 613-546-0000 for assistance with this question."
+                correction = translate_text(correction_en, user_language, "en") if user_language == "fr" else correction_en
+                yield f"data: {json.dumps({'type': 'text', 'content': correction})}\n\n"
+                formatted_results = []
             
             # Send results metadata
             yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
