@@ -140,13 +140,18 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
 
     } catch (error) {
       console.error('Error querying backend:', error);
+      console.error('Error details:', {
+        message: error.message,
+        stack: error.stack,
+        baseUrl: process.env.REACT_APP_API_URL || 'http://localhost:8000'
+      });
       
       // Remove the streaming message and add error message
       setMessages(prev => {
         const filtered = prev.filter(msg => msg.id !== botMessageId);
         filtered.push({
           type: 'bot',
-          text: "Sorry, I'm having trouble connecting right now. Please try again or contact 311 at 613-546-0000.",
+          text: `Sorry, I'm having trouble connecting right now. Error: ${error.message}. Please check if the backend is running on http://localhost:8000 or contact 311 at 613-546-0000.`,
           timestamp: new Date()
         });
         return filtered;
