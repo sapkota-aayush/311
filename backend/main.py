@@ -20,9 +20,12 @@ from openai import OpenAI
 app = FastAPI(title="City of Kingston 311 Chatbot API")
 
 # CORS middleware for React frontend
+# In production, allow all origins (Vercel will provide the domain)
+# In development, restrict to localhost
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

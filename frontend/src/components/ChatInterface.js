@@ -29,7 +29,9 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
         setLoading(true);
 
         try {
-          const apiUrl = process.env.NODE_ENV === 'production' ? '/query' : 'http://localhost:8000/query';
+          const apiUrl = process.env.REACT_APP_API_URL 
+            ? `${process.env.REACT_APP_API_URL}/query` 
+            : 'http://localhost:8000/query';
           const response = await axios.post(apiUrl, {
             query: initialQuery,
             top_k: 3
