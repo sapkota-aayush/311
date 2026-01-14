@@ -29,18 +29,20 @@ allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http:/
 allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
 
 # If ALLOWED_ORIGINS is "*", allow all origins
-if "*" in allowed_origins:
+if "*" in allowed_origins or allowed_origins_env.strip() == "*":
     allowed_origins = ["*"]
     print(f"[CORS] Allowing all origins (wildcard enabled)")
 else:
     print(f"[CORS] Allowed origins: {allowed_origins}")
+    print(f"[CORS] ALLOWED_ORIGINS env var: {allowed_origins_env}")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Initialize OpenAI and Pinecone
