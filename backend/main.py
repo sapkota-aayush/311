@@ -196,30 +196,32 @@ def is_greeting_or_simple_query(query: str) -> bool:
     """Detect if query is a greeting or simple interaction that doesn't need additional information"""
     query_lower = query.lower().strip()
     
-    # Greeting patterns
-    greeting_patterns = [
-        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
-        "how are you", "what can you do", "what do you do", "help me",
+    # Only detect EXACT greetings - be very strict
+    exact_greetings = [
+        "hi", "hello", "hey", 
+        "good morning", "good afternoon", "good evening",
+        "how are you", "what can you do", "what do you do",
         "what is this", "who are you", "introduce yourself"
     ]
     
-    # Simple acknowledgment patterns
+    # Simple acknowledgment patterns (only if they're the whole query)
     simple_patterns = [
         "thanks", "thank you", "ok", "okay", "got it", "understood",
         "that's helpful", "that helps"
     ]
     
-    # Check if it's just a greeting
-    if any(query_lower.startswith(pattern) or query_lower == pattern for pattern in greeting_patterns):
+    # Check if it's EXACTLY a greeting (starts with or equals)
+    if any(query_lower == pattern or query_lower.startswith(pattern + " ") or query_lower.startswith(pattern + "?") or query_lower.startswith(pattern + "!") for pattern in exact_greetings):
+        # But exclude if it's a question about something (e.g., "help with parking" is NOT a greeting)
+        if any(word in query_lower for word in ["with", "about", "for", "when", "where", "how", "what", "why", "can i", "do i", "should i"]):
+            # This is a question, not a greeting
+            return False
         return True
     
-    # Check if it's a very short query (likely greeting)
-    if len(query_lower.split()) <= 3 and any(word in query_lower for word in ["hi", "hello", "hey", "help"]):
-        return True
-    
-    # Check for simple acknowledgments
-    if any(pattern in query_lower for pattern in simple_patterns):
-        return True
+    # Check for simple acknowledgments (only if it's the whole query or very short)
+    if len(query_lower.split()) <= 4:
+        if any(query_lower == pattern or query_lower.startswith(pattern) for pattern in simple_patterns):
+            return True
     
     return False
 
@@ -306,9 +308,12 @@ async def query_pinecone_stream(request: QueryRequest):
             user_address = extract_address_clean(request.query)
             print(f"[STREAM] Intent: {intent_type}, Category: {category}")
             
-            # Handle greetings
-            if is_greeting_or_simple_query(request.query):
+            # Handle greetings (with logging)
+            is_greeting = is_greeting_or_simple_query(request.query)
+            print(f"[STREAM] Is greeting: {is_greeting}")
+            if is_greeting:
                 greeting = "Hello! I'm the City of Kingston 311 assistant. How can I help you today?"
+                print(f"[STREAM] Returning greeting response")
                 yield f"data: {json.dumps({'type': 'text', 'content': greeting, 'done': True})}\n\n"
                 return
             
