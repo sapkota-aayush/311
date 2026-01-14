@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import axios from 'axios';
 import './ChatInterface.css';
 
 const ChatInterface = ({ initialQuery = '', onBack }) => {
@@ -83,7 +82,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      let accumulatedText = '';
+      const accumulatedTextRef = { current: '' };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -100,12 +99,12 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
               
               if (data.type === 'text' && data.content) {
                 // Accumulate content without aggressive cleaning (preserve formatting)
-                accumulatedText += data.content;
+                accumulatedTextRef.current += data.content;
                 
                 // Update the streaming message
                 setMessages(prev => prev.map(msg => 
                   msg.id === botMessageId 
-                    ? { ...msg, text: accumulatedText }
+                    ? { ...msg, text: accumulatedTextRef.current }
                     : msg
                 ));
                 scrollToBottom();
@@ -134,7 +133,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
       // Finalize the message
       setMessages(prev => prev.map(msg => 
         msg.id === botMessageId 
-          ? { ...msg, streaming: false, text: accumulatedText.trim() }
+          ? { ...msg, streaming: false, text: accumulatedTextRef.current.trim() }
           : msg
       ));
 
@@ -161,38 +160,6 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     }
   };
 
-  const formatResponse = (results) => {
-    if (!results || results.length === 0) {
-      return "I couldn't find specific information about that. Please try rephrasing your question.";
-    }
-
-    // Check if first result is a direct answer from OpenAI
-    const firstResult = results[0];
-    let response = '';
-    
-    if (firstResult.topic === 'direct_answer') {
-      // First result is the direct answer - use it directly
-      response = firstResult.content;
-    } else {
-      // No direct answer generated, use first result content
-      const content = firstResult.content;
-      const preview = content.substring(0, 300);
-      response = preview;
-      if (content.length > 300) {
-        response += '...';
-      }
-    }
-
-    // Add source URL if available (skip if it's the direct answer result)
-    if (firstResult.source_url && firstResult.topic !== 'direct_answer') {
-      response += `\n\nFor more information, visit: ${firstResult.source_url}`;
-    }
-
-    // Add fallback contact info
-    response += '\n\nIf you need further assistance, please contact 311 at 613-546-0000.';
-
-    return response;
-  };
 
   // Function to determine if results should be shown
   const shouldShowResults = (messageText, results) => {
@@ -334,7 +301,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     // Pattern to match: **bold**, URLs, or regular text
     const patterns = [
       { regex: /\*\*(.+?)\*\*/g, type: 'bold' },
-      { regex: /(https?:\/\/[^\s\)]+)/g, type: 'url' }
+      { regex: /(https?:\/\/[^\s)]+)/g, type: 'url' }
     ];
     
     // Find all matches
@@ -397,7 +364,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     
     // If no matches, return original text with URL linking
     if (parts.length === 0) {
-      const urlRegex = /(https?:\/\/[^\s\)]+)/g;
+      const urlRegex = /(https?:\/\/[^\s)]+)/g;
       const urlParts = text.split(urlRegex);
       return urlParts.map((part, idx) => {
         if (urlRegex.test(part)) {
