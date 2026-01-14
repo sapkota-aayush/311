@@ -13,15 +13,22 @@ CityOfKingston/
 │   ├── src/
 │   │   ├── App.js
 │   │   ├── components/
-│   │   │   └── ChatInterface.js
+│   │   │   ├── ChatInterface.js
+│   │   │   └── LandingPage.js
 │   │   └── index.js
 │   └── package.json
-├── extract_sources.py    # Extract content from City pages
-├── pinecone_integration.py  # Upload data to Pinecone
-└── waste_collection_all.json  # Extracted data
+├── DEPLOYMENT.md     # Deployment guide for Vercel & Railway
+├── ENV_SETUP.md      # Environment variables setup guide
+└── README.md         # This file
 ```
 
-## Setup
+## Quick Start
+
+### Prerequisites
+- Python 3.9+
+- Node.js 16+
+- Pinecone API key
+- OpenAI API key
 
 ### Backend Setup
 
@@ -35,7 +42,7 @@ cd backend
 pip install -r requirements.txt
 ```
 
-3. Set environment variables:
+3. Set environment variables (see [ENV_SETUP.md](./ENV_SETUP.md) for details):
 ```bash
 export PINECONE_API_KEY='your-pinecone-key'
 export OPENAI_API_KEY='your-openai-key'
@@ -44,7 +51,6 @@ export OPENAI_API_KEY='your-openai-key'
 4. Run the server:
 ```bash
 python main.py
-# Or: uvicorn main:app --reload --port 8000
 ```
 
 Backend runs on `http://localhost:8000`
@@ -61,12 +67,19 @@ cd frontend
 npm install
 ```
 
-3. Start the development server:
+3. Set environment variable (see [ENV_SETUP.md](./ENV_SETUP.md) for details):
+```bash
+export REACT_APP_API_URL='http://localhost:8000'
+```
+
+4. Start the development server:
 ```bash
 npm start
 ```
 
 Frontend runs on `http://localhost:3000`
+
+**📝 Important**: See [ENV_SETUP.md](./ENV_SETUP.md) for detailed environment variable configuration.
 
 ## API Endpoints
 
@@ -86,3 +99,13 @@ Frontend runs on `http://localhost:3000`
 - Frontend: React with axios for API calls
 - Embeddings: OpenAI text-embedding-3-small
 - Vector DB: Pinecone
+
+## Deployment
+
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for step-by-step instructions to deploy:
+- Frontend to Vercel
+- Backend to Railway
+
+## Environment Variables
+
+See [ENV_SETUP.md](./ENV_SETUP.md) for complete environment variable setup guide.
