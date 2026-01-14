@@ -1,0 +1,6 @@
+backend/
+requirements.txt
+*.py
+Procfile
+railway.json
+runtime.txt

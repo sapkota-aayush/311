@@ -39,6 +39,8 @@ yarn-error.log*
 *.json
 !package.json
 !package-lock.json
+!vercel.json
+!railway.json
 
 # API Keys and secrets
 *.key
