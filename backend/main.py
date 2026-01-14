@@ -386,7 +386,8 @@ async def query_pinecone_stream(request: QueryRequest):
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
             else:
                 print(f"[STREAM] No context found")
-                yield f"data: {json.dumps({'type': 'text', 'content': \"I couldn't find specific information. Please contact 311 at 613-546-0000.\", 'done': True})}\n\n"
+                error_msg = "I couldn't find specific information. Please contact 311 at 613-546-0000."
+                yield f"data: {json.dumps({'type': 'text', 'content': error_msg, 'done': True})}\n\n"
                 
         except Exception as e:
             error_msg = str(e)
