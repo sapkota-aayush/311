@@ -6,9 +6,25 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
   const [input, setInput] = useState(initialQuery);
   const [loading, setLoading] = useState(false);
   const [language, setLanguage] = useState('en'); // 'en' or 'fr'
+  const messagesContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const initialQuerySubmitted = useRef(false);
+
+  // Mobile viewport stabilization (iOS keyboard can change viewport height)
+  useEffect(() => {
+    const setVh = () => {
+      const vh = window.innerHeight * 0.01;
+      document.documentElement.style.setProperty('--app-vh', `${vh}px`);
+    };
+    setVh();
+    window.addEventListener('resize', setVh);
+    window.addEventListener('orientationchange', setVh);
+    return () => {
+      window.removeEventListener('resize', setVh);
+      window.removeEventListener('orientationchange', setVh);
+    };
+  }, []);
 
   // Translation map for UI text
   const translations = {
@@ -42,11 +58,13 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
   }, [initialQuery]);
 
   const scrollToBottom = () => {
+    // Avoid pushing the welcome screen up on initial load (mobile especially)
+    if (!messages || messages.length === 0) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
   useEffect(() => {
-    scrollToBottom();
+    if (messages.length > 0) scrollToBottom();
   }, [messages]);
 
   // Auto-focus input on mount (for mobile keyboard)
@@ -55,6 +73,10 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     const timer = setTimeout(() => {
       if (inputRef.current && messages.length === 0) {
         inputRef.current.focus();
+        // Keep the welcome section anchored at the top when the keyboard opens
+        if (messagesContainerRef.current) {
+          messagesContainerRef.current.scrollTop = 0;
+        }
       }
     }, 300);
     return () => clearTimeout(timer);
@@ -435,7 +457,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
           </div>
         </div>
       )}
-      <div className="messages-container">
+      <div className="messages-container" ref={messagesContainerRef}>
         {messages.length === 0 && (
           <div className="welcome-section">
             <h1 className="welcome-title">{t.welcomeTitle}</h1>

@@ -12,9 +12,12 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
+  height: calc(var(--app-vh, 1vh) * 100);
   background: var(--background-light);
   font-family: 'Public Sans', sans-serif;
   color: var(--text-primary);
+  overflow: hidden;
 }
 
 .chat-header {
@@ -208,7 +211,7 @@
   max-width: 850px;
   width: 100%;
   margin: 0 auto;
-  padding-top: 60px;
+  padding-top: 72px;
   padding-bottom: 140px;
 }
 
