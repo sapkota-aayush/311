@@ -206,9 +206,33 @@ ALLOWED_DYNAMIC_DOMAINS: Set[str] = {
     "cityofkingston.ca",
     "www.cityofkingston.ca",
     "mycity.cityofkingston.ca",
+    "getinvolved.cityofkingston.ca",
+    "open.kingston.ca",
+    "maps.cityofkingston.ca",
     # Kingston Transit runs on a separate official domain
     "kingstontransit.ca",
     "www.kingstontransit.ca",
+    # Utilities Kingston (official City-owned corporation)
+    "utilitieskingston.com",
+    "www.utilitieskingston.com",
+    # Police
+    "police.kingston.on.ca",
+    "www.police.kingston.on.ca",
+    # Fire & Emergency
+    "kingstonfire.ca",
+    "www.kingstonfire.ca",
+    # Public health
+    "kflaph.ca",
+    "www.kflaph.ca",
+    # Airport (City-owned service)
+    "flyygk.com",
+    "www.flyygk.com",
+    # Economic development (City-affiliated)
+    "investkingston.ca",
+    "www.investkingston.ca",
+    # Tourism (City-affiliated)
+    "visitkingston.ca",
+    "www.visitkingston.ca",
 }
 
 CURATED_DYNAMIC_SOURCES: dict = {
@@ -452,6 +476,101 @@ def _pick_latest(items: list[dict], url_substring: str, limit: int = 3) -> list[
     return urls
 
 
+def _tokenize_query_for_match(query: str) -> list[str]:
+    q = (query or "").lower()
+    q = re.sub(r"[^a-z0-9\s-]+", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    stop = {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "to",
+        "of",
+        "in",
+        "on",
+        "for",
+        "is",
+        "are",
+        "was",
+        "were",
+        "it",
+        "my",
+        "your",
+        "i",
+        "we",
+        "you",
+        "today",
+        "now",
+        "please",
+        "kingston",
+        "city",
+    }
+    tokens = []
+    for t in q.split():
+        if len(t) < 3:
+            continue
+        if t in stop:
+            continue
+        tokens.append(t)
+    return tokens[:12]
+
+
+def _sitemap_item_score(item: dict, tokens: list[str]) -> float:
+    """
+    Lightweight heuristic score:
+    - Token matches in URL path get points
+    - lastmod (when present) provides a small recency boost
+    """
+    loc = (item.get("loc") or "").lower()
+    if not loc:
+        return 0.0
+
+    score = 0.0
+    for t in tokens:
+        if t in loc:
+            score += 3.0
+
+    # Prefer deeper/more specific pages a bit (avoid always picking only hubs)
+    score += min(loc.count("/"), 10) * 0.15
+
+    # Recency boost (ISO strings compare lexicographically)
+    lastmod = (item.get("lastmod") or "").strip()
+    if lastmod:
+        score += 1.0
+
+    return score
+
+
+def _search_sitemap(items: list[dict], query: str, include_prefixes: list[str], limit: int = 6) -> list[str]:
+    tokens = _tokenize_query_for_match(query)
+    if not tokens:
+        return []
+
+    candidates = []
+    for it in items:
+        loc = it.get("loc") or ""
+        if not loc:
+            continue
+        if include_prefixes and not any(p in loc for p in include_prefixes):
+            continue
+        s = _sitemap_item_score(it, tokens)
+        if s <= 0:
+            continue
+        candidates.append((s, it.get("lastmod") or "", loc))
+
+    # Sort by score then lastmod (desc)
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    out = []
+    for _, __, url in candidates:
+        if url not in out:
+            out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def select_dynamic_sources(bucket: Optional[str], query: str, max_results: int = 6) -> list[dict]:
     """
     Combine curated seed pages + most recent relevant pages from the City's sitemap.
@@ -462,16 +581,41 @@ def select_dynamic_sources(bucket: Optional[str], query: str, max_results: int =
 
     items = _fetch_sitemap_items()
     extra_urls: list[str] = []
+    keyword_urls: list[str] = []
 
     if bucket == "road_closures":
+        keyword_urls.extend(
+            _search_sitemap(
+                items,
+                query=query,
+                include_prefixes=["/news/posts/", "/roads-parking-and-transportation/"],
+                limit=6,
+            )
+        )
         extra_urls.extend(_pick_latest(items, "/news/posts/weekly-traffic-report-", limit=3))
         extra_urls.extend(_pick_latest(items, "/news/posts/traffic-report", limit=2))
 
     elif bucket == "transit":
+        keyword_urls.extend(
+            _search_sitemap(
+                items,
+                query=query,
+                include_prefixes=["/news/posts/", "/news-and-notices/transit-news/"],
+                limit=6,
+            )
+        )
         extra_urls.extend(_pick_latest(items, "/news/posts/kingston-transit-service-alert", limit=4))
         extra_urls.extend(_pick_latest(items, "/news-and-notices/transit-news/", limit=1))
 
     elif bucket == "snow_removal":
+        keyword_urls.extend(
+            _search_sitemap(
+                items,
+                query=query,
+                include_prefixes=["/news/posts/", "/roads-parking-and-transportation/"],
+                limit=6,
+            )
+        )
         extra_urls.extend(_pick_latest(items, "/news/posts/winter-parking", limit=4))
         extra_urls.extend(_pick_latest(items, "/news/posts/winter-services-response-plan", limit=2))
 
@@ -493,11 +637,15 @@ def select_dynamic_sources(bucket: Optional[str], query: str, max_results: int =
         seen.add(url)
         out.append({"title": title, "url": url})
 
-    for s in base:
-        add(s.get("title", ""), s.get("url", ""))
+    # Prefer specific keyword-matched pages first, then recent pattern pages, then curated hubs.
+    for url in keyword_urls:
+        add("Official update", url)
 
     for url in extra_urls:
         add("Official update", url)
+
+    for s in base:
+        add(s.get("title", ""), s.get("url", ""))
 
     return out[:max_results]
 
