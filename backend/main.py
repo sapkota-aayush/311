@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Iterable, Any, Set
 import os
 import re
 import requests
@@ -60,6 +60,275 @@ if not pinecone_api_key or not openai_api_key:
 pc_client = Pinecone(api_key=pinecone_api_key)
 index = pc_client.Index("kingston-policies")
 openai_client = OpenAI(api_key=openai_api_key)
+
+# -------------------------
+# Retrieval helpers (RAG)
+# -------------------------
+def _normalize_category(value: str) -> str:
+    """
+    Normalize categories so metadata like 'Property Tax', 'property-tax', 'property_tax'
+    all compare equal.
+    """
+    if not value:
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().lower())
+    return normalized.strip("_")
+
+
+def _clean_retrieved_content(raw: str) -> str:
+    """
+    Clean common navigation / boilerplate fragments from scraped content.
+    We prefer cleaning over dropping entire docs, otherwise RAG can end up with
+    empty context (especially pages containing 'Section Menu').
+    """
+    if not raw:
+        return ""
+    text = raw
+
+    # Remove common nav labels / boilerplate tokens
+    text = re.sub(r"\bSection Menu\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bContact Us\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bCity of Kingston\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bCity Hall\b", " ", text, flags=re.IGNORECASE)
+
+    # Remove cheque / mailing-address sections if present in scraped text
+    text = re.sub(
+        r"Make your cheque payable to City of Kingston and mail it to.*?(?=\n\n|\Z)",
+        " ",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(
+        r"Make your cheque payable.*?PO Box 640.*?(?=\n\n|\Z)",
+        " ",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Collapse whitespace
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _select_context_and_results(
+    matches: Iterable[Any],
+    expected_category: str,
+    top_k: int,
+) -> tuple[list[dict], list[str]]:
+    """
+    Turn Pinecone matches into:
+    - formatted_results (for UI sources)
+    - context_parts (for LLM prompt)
+
+    Key behaviors:
+    - Category matching is normalized.
+    - Dedup by source_url so repeated near-duplicates don't crowd out better docs.
+    - Clean common boilerplate rather than dropping entire docs.
+    - If category-filtered candidates yield no usable context, fall back to all matches.
+    """
+    expected_norm = _normalize_category(expected_category)
+
+    def to_item(m: Any) -> dict:
+        md = getattr(m, "metadata", {}) or {}
+        return {
+            "score": getattr(m, "score", 0.0),
+            "raw_content": md.get("content", "") or "",
+            "category": md.get("category", "") or "",
+            "topic": md.get("topic", "") or "",
+            "source_url": md.get("source_url", "") or "",
+        }
+
+    items = [to_item(m) for m in (matches or [])]
+    items.sort(key=lambda x: -(x.get("score") or 0.0))
+
+    def build_from(candidate_items: list[dict]) -> tuple[list[dict], list[str]]:
+        formatted: list[dict] = []
+        context: list[str] = []
+        seen_urls: Set[str] = set()
+
+        # Consider more than top_k*2 because top results can be boilerplate-heavy
+        candidate_limit = max(top_k * 6, 20)
+
+        for item in candidate_items[:candidate_limit]:
+            url = item.get("source_url", "")
+            if url and url in seen_urls:
+                continue
+
+            cleaned = _clean_retrieved_content(item.get("raw_content", ""))
+
+            # Skip tiny / empty chunks after cleaning
+            if len(cleaned) < 200:
+                continue
+
+            if url:
+                seen_urls.add(url)
+
+            formatted.append(
+                {
+                    "score": item.get("score", 0.0),
+                    "content": cleaned[:500],
+                    "category": item.get("category", ""),
+                    "topic": item.get("topic", ""),
+                    "source_url": url,
+                }
+            )
+            context.append(cleaned[:2000])
+
+            if len(context) >= top_k:
+                break
+
+        return formatted, context
+
+    # First try: only expected category (normalized)
+    if expected_norm:
+        filtered = [
+            it for it in items if _normalize_category(it.get("category", "")) == expected_norm
+        ]
+    else:
+        filtered = items
+
+    formatted_results, context_parts = build_from(filtered)
+
+    # Fallback: if filtering produced no usable context, try unfiltered
+    if not context_parts:
+        formatted_results, context_parts = build_from(items)
+
+    return formatted_results, context_parts
+
+
+# -------------------------
+# Dynamic (official-site) search helpers
+# -------------------------
+ALLOWED_DYNAMIC_DOMAINS: Set[str] = {
+    "cityofkingston.ca",
+    "www.cityofkingston.ca",
+    "mycity.cityofkingston.ca",
+}
+
+CURATED_DYNAMIC_SOURCES: dict = {
+    # Transportation/operations pages that can change frequently
+    "road_closures": [
+        {
+            "title": "Traffic and Road Closures",
+            "url": "https://www.cityofkingston.ca/roads-parking-and-transportation/road-closures/",
+        }
+    ],
+    "snow_removal": [
+        {
+            "title": "Snow Removal and Winter Maintenance",
+            "url": "https://www.cityofkingston.ca/roads-parking-and-transportation/snow-removal/",
+        }
+    ],
+    "transit": [
+        {
+            "title": "Kingston Transit",
+            "url": "https://www.cityofkingston.ca/transit/",
+        }
+    ],
+    # Optional: weather/safety page placeholder (kept empty unless you add an official Kingston source)
+    "weather": [],
+}
+
+
+def _is_allowed_domain(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+        return host in ALLOWED_DYNAMIC_DOMAINS
+    except Exception:
+        return False
+
+
+def classify_dynamic_bucket(query: str) -> Optional[str]:
+    """
+    Prototype-only routing: dynamic = fast-changing operational info.
+    Returns a bucket key or None.
+    """
+    q = (query or "").lower()
+
+    if any(k in q for k in ["road closure", "road closures", "road closed", "lane closed", "traffic", "construction", "detour"]):
+        return "road_closures"
+
+    if any(k in q for k in ["snow", "snow removal", "plow", "plowing", "winter maintenance", "winter"]):
+        return "snow_removal"
+
+    if any(k in q for k in ["transit", "bus", "kingston transit", "route", "detour", "delay", "delayed", "cancelled", "canceled"]):
+        return "transit"
+
+    if "weather" in q:
+        return "weather"
+
+    return None
+
+
+def is_dynamic_query(query: str) -> bool:
+    """
+    Dynamic = fast-changing operational info (transit/closures/snow/weather).
+    Keep this simple for the prototype.
+    """
+    return classify_dynamic_bucket(query) is not None
+
+
+def _http_get(url: str) -> str:
+    headers = {
+        "User-Agent": "CityOfKingston311Bot/1.0 (+https://www.cityofkingston.ca/)",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    return resp.text
+
+
+def extract_page_text(html: str) -> str:
+    """
+    Extract readable text from an HTML page and aggressively remove nav/boilerplate.
+    """
+    if not html:
+        return ""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    text = soup.get_text("\n", strip=True)
+    return _clean_retrieved_content(text)
+
+
+def build_dynamic_context(query: str, max_results: int = 4) -> tuple[list[dict], str]:
+    """
+    Returns (sources, context_text).
+    context_text is formatted with per-source blocks so the model can cite them.
+    """
+    bucket = classify_dynamic_bucket(query)
+    sources = (CURATED_DYNAMIC_SOURCES.get(bucket, []) if bucket else [])[:max_results]
+    if not sources:
+        return [], ""
+
+    context_blocks: list[str] = []
+    usable_sources: list[dict] = []
+
+    for idx, src in enumerate(sources, start=1):
+        url = src.get("url", "")
+        if not url:
+            continue
+        if not _is_allowed_domain(url):
+            continue
+        try:
+            html = _http_get(url)
+            page_text = extract_page_text(html)
+            if len(page_text) < 300:
+                continue
+            snippet = page_text[:3500]
+            context_blocks.append(f"[{idx}] {url}\n{snippet}")
+            usable_sources.append(src)
+        except Exception as e:
+            print(f"[DYNAMIC SEARCH] Failed to fetch {url}: {e}")
+            continue
+
+        if len(usable_sources) >= max_results:
+            break
+
+    return usable_sources, "\n\n".join(context_blocks).strip()
 
 # Initialize LangChain LLM for answer generation
 llm = ChatOpenAI(
@@ -553,7 +822,11 @@ async def query_pinecone_stream(request: QueryRequest):
                 request.query = translate_text(request.query, "en", "fr")
                 print(f"[STREAM] Translated query: {request.query}")
             
-            # Classify intent (using English query)
+            # Decide dynamic vs static (using English query)
+            dynamic = is_dynamic_query(request.query)
+            print(f"[ROUTER] dynamic={dynamic}")
+
+            # Classify intent/category for STATIC RAG (still useful for filtering)
             intent_type, category = classify_question_intent(request.query)
             user_address = extract_address_clean(request.query)
             print(f"[STREAM] Intent: {intent_type}, Category: {category}")
@@ -568,10 +841,95 @@ async def query_pinecone_stream(request: QueryRequest):
                 yield f"data: {json.dumps({'type': 'text', 'content': greeting, 'done': True})}\n\n"
                 return
             
-            # Handle out-of-scope questions
+            # Dynamic route: official-site search first (citations required)
+            if dynamic:
+                print("[DYNAMIC] Building official-site context...")
+                sources, dyn_context = build_dynamic_context(request.query, max_results=4)
+                if not dyn_context:
+                    print("[DYNAMIC] No official sources found")
+                    fallback_msg_en = "I couldn't confirm that on official City of Kingston sources. Please try rephrasing, or contact 311 at 613-546-0000 for assistance."
+                    fallback_msg = translate_text(fallback_msg_en, user_language, "en") if user_language == "fr" else fallback_msg_en
+                    yield f"data: {json.dumps({'type': 'text', 'content': fallback_msg, 'done': True})}\n\n"
+                    return
+
+                dyn_prompt = f"""You are the City of Kingston 311 assistant.
+Answer the user's question using ONLY the official sources provided below.
+
+Rules:
+1) If the sources do not contain the answer, say: "I couldn't confirm that on official City of Kingston sources."
+2) Do NOT guess. Do NOT use outside knowledge.
+3) Include citations like [1], [2] matching the source numbers.
+4) Keep the answer clear and practical.
+
+Question: {request.query}
+
+Official sources:
+{dyn_context}
+"""
+
+                print("[DYNAMIC] Starting OpenAI stream...")
+                stream = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You answer only from provided sources and include citations."},
+                        {"role": "user", "content": dyn_prompt},
+                    ],
+                    temperature=0.1,
+                    max_tokens=700,
+                    stream=True,
+                )
+
+                full_answer = ""
+                chunk_count = 0
+
+                if user_language == "fr":
+                    for chunk in stream:
+                        try:
+                            if chunk.choices and len(chunk.choices) > 0:
+                                delta = chunk.choices[0].delta
+                                if hasattr(delta, "content") and delta.content:
+                                    content = delta.content
+                                    full_answer += content
+                                    chunk_count += 1
+                        except Exception as chunk_error:
+                            print(f"[DYNAMIC STREAM] Error processing chunk: {chunk_error}")
+                            continue
+
+                    full_answer = re.sub(r"\s+", " ", full_answer).strip()
+                    full_answer = translate_text(full_answer, "fr", "en")
+                    for i, word in enumerate(full_answer.split()):
+                        yield f"data: {json.dumps({'type': 'text', 'content': word + (' ' if i < len(full_answer.split())-1 else '')})}\n\n"
+                else:
+                    for chunk in stream:
+                        try:
+                            if chunk.choices and len(chunk.choices) > 0:
+                                delta = chunk.choices[0].delta
+                                if hasattr(delta, "content") and delta.content:
+                                    content = delta.content
+                                    full_answer += content
+                                    chunk_count += 1
+                                    if content:
+                                        yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
+                        except Exception as chunk_error:
+                            print(f"[DYNAMIC STREAM] Error processing chunk: {chunk_error}")
+                            continue
+
+                    full_answer = re.sub(r"\s+", " ", full_answer).strip()
+
+                # Send sources as results metadata so the UI can show them
+                formatted_results = [
+                    {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
+                    for s in sources
+                    if s.get("url")
+                ]
+                yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+
+            # Handle out-of-scope questions (only after dynamic router says "not dynamic")
             if intent_type == "out_of_scope" or category == "none":
                 print(f"[STREAM] Question is out of scope")
-                answer_en = "I'm the City of Kingston 311 assistant, and I can help with questions about city services like waste collection, parking permits, property taxes, and city bylaws. For other issues like lost items or transit services, please contact 311 directly at 613-546-0000."
+                answer_en = "I'm the City of Kingston 311 assistant. I couldn't find that in our policies knowledge base. You can try asking about City services/policies, or contact 311 at 613-546-0000 for assistance."
                 answer = translate_text(answer_en, user_language, "en") if user_language == "fr" else answer_en
                 yield f"data: {json.dumps({'type': 'text', 'content': answer, 'done': True})}\n\n"
                 return
@@ -602,40 +960,71 @@ async def query_pinecone_stream(request: QueryRequest):
                 include_metadata=True
             )
             print(f"[STREAM] Found {len(results.matches)} matches")
-            
-            category_matches = [
-                match for match in results.matches 
-                if match.metadata.get("category", "").lower() == category.lower()
-            ]
-            
-            formatted_results = []
-            context_parts = []
-            
-            sorted_matches = sorted(
-                category_matches[:request.top_k * 2] if category_matches else results.matches[:request.top_k * 2],
-                key=lambda x: -x.score
+
+            formatted_results, context_parts = _select_context_and_results(
+                results.matches,
+                expected_category=category,
+                top_k=request.top_k,
             )
-            
-            for match in sorted_matches:
-                content = match.metadata.get("content", "")
-                if "section menu" in content.lower() or ("learn more" in content.lower() and len(content) < 100):
-                    continue
-                # Filter out mailing address information
-                if "make your cheque payable" in content.lower() or "po box 640" in content.lower():
-                    continue
-                formatted_results.append({
-                    "score": match.score,
-                    "content": content[:500],
-                    "category": match.metadata.get("category", ""),
-                    "topic": match.metadata.get("topic", ""),
-                    "source_url": match.metadata.get("source_url", "")
-                })
-                context_parts.append(content[:1500])
             
             # Quick fallback if no context found
             if not context_parts:
-                print(f"[STREAM] No context found - using quick fallback")
-                fallback_msg_en = "I don't have specific information about that in our knowledge base. Please contact 311 at 613-546-0000 for assistance with this question."
+                print(f"[STREAM] No RAG context - falling back to official-site search")
+                sources, dyn_context = build_dynamic_context(request.query, max_results=4)
+                if dyn_context:
+                    # Reuse dynamic prompt (non-guessing, citations)
+                    dyn_prompt = f"""You are the City of Kingston 311 assistant.
+Answer the user's question using ONLY the official sources provided below.
+
+Rules:
+1) If the sources do not contain the answer, say: "I couldn't confirm that on official City of Kingston sources."
+2) Do NOT guess. Do NOT use outside knowledge.
+3) Include citations like [1], [2] matching the source numbers.
+
+Question: {request.query}
+
+Official sources:
+{dyn_context}
+"""
+                    stream = openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "You answer only from provided sources and include citations."},
+                            {"role": "user", "content": dyn_prompt},
+                        ],
+                        temperature=0.1,
+                        max_tokens=700,
+                        stream=True,
+                    )
+                    full_answer = ""
+                    if user_language == "fr":
+                        for chunk in stream:
+                            if chunk.choices and len(chunk.choices) > 0:
+                                delta = chunk.choices[0].delta
+                                if hasattr(delta, "content") and delta.content:
+                                    full_answer += delta.content
+                        full_answer = re.sub(r"\s+", " ", full_answer).strip()
+                        full_answer = translate_text(full_answer, "fr", "en")
+                        words = full_answer.split()
+                        for i, word in enumerate(words):
+                            yield f"data: {json.dumps({'type': 'text', 'content': word + (' ' if i < len(words)-1 else '')})}\n\n"
+                    else:
+                        for chunk in stream:
+                            if chunk.choices and len(chunk.choices) > 0:
+                                delta = chunk.choices[0].delta
+                                if hasattr(delta, "content") and delta.content:
+                                    yield f"data: {json.dumps({'type': 'text', 'content': delta.content})}\n\n"
+
+                    formatted_results = [
+                        {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
+                        for s in sources
+                        if s.get("url")
+                    ]
+                    yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+
+                fallback_msg_en = "I couldn't find official information about that. Please try rephrasing, or contact 311 at 613-546-0000 for assistance."
                 fallback_msg = translate_text(fallback_msg_en, user_language, "en") if user_language == "fr" else fallback_msg_en
                 yield f"data: {json.dumps({'type': 'text', 'content': fallback_msg, 'done': True})}\n\n"
                 return
@@ -644,8 +1033,61 @@ async def query_pinecone_stream(request: QueryRequest):
             print(f"[STREAM] Checking context relevance...")
             context_relevance = check_context_relevance(request.query, "\n\n".join(context_parts[:2]), category)
             if not context_relevance:
-                print(f"[STREAM] Context not relevant - using quick fallback")
-                fallback_msg_en = "I don't have specific information about that in our knowledge base. Please contact 311 at 613-546-0000 for assistance with this question."
+                print(f"[STREAM] Context not relevant - falling back to official-site search")
+                sources, dyn_context = build_dynamic_context(request.query, max_results=4)
+                if dyn_context:
+                    dyn_prompt = f"""You are the City of Kingston 311 assistant.
+Answer the user's question using ONLY the official sources provided below.
+
+Rules:
+1) If the sources do not contain the answer, say: "I couldn't confirm that on official City of Kingston sources."
+2) Do NOT guess. Do NOT use outside knowledge.
+3) Include citations like [1], [2] matching the source numbers.
+
+Question: {request.query}
+
+Official sources:
+{dyn_context}
+"""
+                    stream = openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "You answer only from provided sources and include citations."},
+                            {"role": "user", "content": dyn_prompt},
+                        ],
+                        temperature=0.1,
+                        max_tokens=700,
+                        stream=True,
+                    )
+                    full_answer = ""
+                    if user_language == "fr":
+                        for chunk in stream:
+                            if chunk.choices and len(chunk.choices) > 0:
+                                delta = chunk.choices[0].delta
+                                if hasattr(delta, "content") and delta.content:
+                                    full_answer += delta.content
+                        full_answer = re.sub(r"\s+", " ", full_answer).strip()
+                        full_answer = translate_text(full_answer, "fr", "en")
+                        words = full_answer.split()
+                        for i, word in enumerate(words):
+                            yield f"data: {json.dumps({'type': 'text', 'content': word + (' ' if i < len(words)-1 else '')})}\n\n"
+                    else:
+                        for chunk in stream:
+                            if chunk.choices and len(chunk.choices) > 0:
+                                delta = chunk.choices[0].delta
+                                if hasattr(delta, "content") and delta.content:
+                                    yield f"data: {json.dumps({'type': 'text', 'content': delta.content})}\n\n"
+
+                    formatted_results = [
+                        {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
+                        for s in sources
+                        if s.get("url")
+                    ]
+                    yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+
+                fallback_msg_en = "I couldn't confirm that on official City of Kingston sources. Please contact 311 at 613-546-0000 for assistance."
                 fallback_msg = translate_text(fallback_msg_en, user_language, "en") if user_language == "fr" else fallback_msg_en
                 yield f"data: {json.dumps({'type': 'text', 'content': fallback_msg, 'done': True})}\n\n"
                 return
@@ -832,41 +1274,12 @@ async def query_pinecone(request: QueryRequest):
             top_k=request.top_k * 3,  # Get more to filter from
             include_metadata=True
         )
-        
-        # CRITICAL: Filter to ONLY the classified category
-        category_matches = [
-            match for match in results.matches 
-            if match.metadata.get("category", "").lower() == category.lower()
-        ]
-        
-        # Format retrieved documents - Use category-filtered matches
-        formatted_results = []
-        context_parts = []
-        
-        # Use category matches if available, otherwise use all (fallback)
-        if category_matches:
-            sorted_matches = sorted(category_matches[:request.top_k * 2], key=lambda x: -x.score)  # Get more for comprehensive answer
-        else:
-            sorted_matches = sorted(results.matches[:request.top_k * 2], key=lambda x: -x.score)
-        
-        for match in sorted_matches:
-            content = match.metadata.get("content", "")
-            # Skip menu/navigation content
-            if "section menu" in content.lower() or "learn more" in content.lower() and len(content) < 100:
-                continue
-            # Filter out mailing address information
-            if "make your cheque payable" in content.lower() or "po box 640" in content.lower():
-                continue
-            formatted_results.append({
-                "score": match.score,
-                "content": content[:500],
-                "category": match.metadata.get("category", ""),
-                "topic": match.metadata.get("topic", ""),
-                "source_url": match.metadata.get("source_url", "")
-            })
-            # Use longer context for comprehensive answers
-            context_length = 1500
-            context_parts.append(content[:context_length])
+
+        formatted_results, context_parts = _select_context_and_results(
+            results.matches,
+            expected_category=category,
+            top_k=request.top_k,
+        )
         
         # Generate answer using LangChain - with category-specific prompt
         if context_parts:
