@@ -12,6 +12,8 @@ import os
 import re
 import requests
 from bs4 import BeautifulSoup
+import time
+import xml.etree.ElementTree as ET
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
@@ -204,6 +206,9 @@ ALLOWED_DYNAMIC_DOMAINS: Set[str] = {
     "cityofkingston.ca",
     "www.cityofkingston.ca",
     "mycity.cityofkingston.ca",
+    # Kingston Transit runs on a separate official domain
+    "kingstontransit.ca",
+    "www.kingstontransit.ca",
 }
 
 CURATED_DYNAMIC_SOURCES: dict = {
@@ -238,9 +243,19 @@ CURATED_DYNAMIC_SOURCES: dict = {
             "url": "https://www.cityofkingston.ca/news-and-notices/transit-news/",
         }
     ],
+    "transit_lost_found": [
+        {
+            "title": "Kingston Transit – Lost and Found",
+            "url": "https://www.kingstontransit.ca/lost-and-found/",
+        }
+    ],
     # Optional: weather/safety page placeholder (kept empty unless you add an official Kingston source)
     "weather": [],
 }
+
+_SITEMAP_CACHE: dict = {"ts": 0.0, "items": []}  # {ts: float, items: list[dict]}
+SITEMAP_TTL_SECONDS = int(os.getenv("SITEMAP_TTL_SECONDS", "3600"))
+SITEMAP_URL = os.getenv("SITEMAP_URL", "https://www.cityofkingston.ca/sitemap.xml")
 
 
 def _is_allowed_domain(url: str) -> bool:
@@ -260,11 +275,40 @@ def classify_dynamic_bucket(query: str) -> Optional[str]:
     """
     q = (query or "").lower()
 
-    if any(k in q for k in ["road closure", "road closures", "road closed", "lane closed", "traffic", "construction", "detour"]):
+    # Time-sensitive hint + road-ish wording should still be treated as dynamic
+    time_hint = any(k in q for k in ["today", "tomorrow", "now", "right now", "current", "latest", "updated"])
+
+    # Common road closures phrasing + typos seen in real user input
+    road_terms = [
+        "road closure",
+        "road closures",
+        "road closed",
+        "lane closed",
+        "closure",
+        "traffic",
+        "detour",
+        "construction",
+        "road work",
+        "roadwork",
+        "blocked",
+        "road blocked",
+        "blockage",
+    ]
+
+    # Catch frequent misspellings like "contruction" / "constuction"
+    construction_typos = any(k in q for k in ["contruc", "constuc", "construc"])
+
+    if any(k in q for k in road_terms) or (time_hint and "road" in q) or construction_typos:
         return "road_closures"
 
     if any(k in q for k in ["snow", "snow removal", "plow", "plowing", "winter maintenance", "winter"]):
         return "snow_removal"
+
+    # Transit lost & found (common real-world question; official site is kingstontransit.ca)
+    if any(k in q for k in ["lost and found", "lost my", "lost wallet", "lost phone", "lost item"]) and any(
+        k in q for k in ["transit", "bus", "kingston transit"]
+    ):
+        return "transit_lost_found"
 
     if any(k in q for k in ["transit", "bus", "kingston transit", "route", "detour", "delay", "delayed", "cancelled", "canceled"]):
         return "transit"
@@ -306,13 +350,120 @@ def extract_page_text(html: str) -> str:
     return _clean_retrieved_content(text)
 
 
+def _fetch_sitemap_items() -> list[dict]:
+    """
+    Fetch the City's sitemap and return:
+    [{"loc": str, "lastmod": str|None}]
+    Cached in-memory for TTL seconds.
+    """
+    now = time.time()
+    if _SITEMAP_CACHE["items"] and (now - float(_SITEMAP_CACHE["ts"])) < SITEMAP_TTL_SECONDS:
+        return _SITEMAP_CACHE["items"]
+
+    try:
+        xml_text = _http_get(SITEMAP_URL)
+        root = ET.fromstring(xml_text)
+        ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+        items: list[dict] = []
+        for url_el in root.findall("sm:url", ns):
+            loc_el = url_el.find("sm:loc", ns)
+            lastmod_el = url_el.find("sm:lastmod", ns)
+            loc = (loc_el.text or "").strip() if loc_el is not None else ""
+            if not loc:
+                continue
+            if not _is_allowed_domain(loc):
+                continue
+            items.append(
+                {
+                    "loc": loc,
+                    "lastmod": (lastmod_el.text or "").strip() if lastmod_el is not None else None,
+                }
+            )
+        _SITEMAP_CACHE["ts"] = now
+        _SITEMAP_CACHE["items"] = items
+        return items
+    except Exception as e:
+        print(f"[SITEMAP] Failed to fetch/parse sitemap: {e}")
+        return []
+
+
+def _pick_latest(items: list[dict], url_substring: str, limit: int = 3) -> list[str]:
+    """
+    Pick latest URLs matching substring, ordered by lastmod desc when available.
+    """
+    matches = [it for it in items if url_substring in (it.get("loc") or "")]
+
+    def key(it: dict) -> str:
+        return it.get("lastmod") or ""
+
+    matches.sort(key=key, reverse=True)
+    urls: list[str] = []
+    for it in matches:
+        loc = it.get("loc") or ""
+        if loc and loc not in urls:
+            urls.append(loc)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def select_dynamic_sources(bucket: Optional[str], query: str, max_results: int = 6) -> list[dict]:
+    """
+    Combine curated seed pages + most recent relevant pages from the City's sitemap.
+    Only returns URLs from allowed domains.
+    """
+    bucket = bucket or classify_dynamic_bucket(query)
+    base = list(CURATED_DYNAMIC_SOURCES.get(bucket, []) if bucket else [])
+
+    items = _fetch_sitemap_items()
+    extra_urls: list[str] = []
+
+    if bucket == "road_closures":
+        extra_urls.extend(_pick_latest(items, "/news/posts/weekly-traffic-report-", limit=3))
+        extra_urls.extend(_pick_latest(items, "/news/posts/traffic-report", limit=2))
+
+    elif bucket == "transit":
+        extra_urls.extend(_pick_latest(items, "/news/posts/kingston-transit-service-alert", limit=4))
+        extra_urls.extend(_pick_latest(items, "/news-and-notices/transit-news/", limit=1))
+
+    elif bucket == "snow_removal":
+        extra_urls.extend(_pick_latest(items, "/news/posts/winter-parking", limit=4))
+        extra_urls.extend(_pick_latest(items, "/news/posts/winter-services-response-plan", limit=2))
+
+    elif bucket == "transit_lost_found":
+        # Curated page on kingstontransit.ca is the primary source; no sitemap expansion needed.
+        pass
+
+    elif bucket == "weather":
+        pass
+
+    seen: Set[str] = set()
+    out: list[dict] = []
+
+    def add(title: str, url: str) -> None:
+        if not url or url in seen:
+            return
+        if not _is_allowed_domain(url):
+            return
+        seen.add(url)
+        out.append({"title": title, "url": url})
+
+    for s in base:
+        add(s.get("title", ""), s.get("url", ""))
+
+    for url in extra_urls:
+        add("Official update", url)
+
+    return out[:max_results]
+
+
 def build_dynamic_context(query: str, max_results: int = 4) -> tuple[list[dict], str]:
     """
     Returns (sources, context_text).
     context_text is formatted with per-source blocks so the model can cite them.
     """
     bucket = classify_dynamic_bucket(query)
-    sources = (CURATED_DYNAMIC_SOURCES.get(bucket, []) if bucket else [])[:max_results]
+    sources = select_dynamic_sources(bucket, query, max_results=max_results)
     if not sources:
         return [], ""
 
@@ -331,7 +482,20 @@ def build_dynamic_context(query: str, max_results: int = 4) -> tuple[list[dict],
             if len(page_text) < 300:
                 continue
             snippet = page_text[:3500]
-            context_blocks.append(f"[{idx}] {url}\n{snippet}")
+            title = (src.get("title") or "").strip()
+            if title.lower() == "official update":
+                # Try to improve placeholder titles from the HTML <title>
+                try:
+                    soup = BeautifulSoup(html, "html.parser")
+                    html_title = (soup.title.get_text(" ", strip=True) if soup.title else "").strip()
+                    if html_title:
+                        title = html_title[:120]
+                        src["title"] = title
+                except Exception:
+                    pass
+
+            header = f"[{idx}] {title or 'Official source'}\nURL: {url}\n"
+            context_blocks.append(f"{header}\n{snippet}")
             usable_sources.append(src)
         except Exception as e:
             print(f"[DYNAMIC SEARCH] Failed to fetch {url}: {e}")
@@ -855,8 +1019,8 @@ async def query_pinecone_stream(request: QueryRequest):
             
             # Dynamic route: official-site search first (citations required)
             if dynamic:
-                print("[DYNAMIC] Building curated official sources...")
-                sources, _dyn_context = build_dynamic_context(request.query, max_results=4)
+                print("[DYNAMIC] Building official-site context (sitemap + fetch)...")
+                sources, dyn_context = build_dynamic_context(request.query, max_results=6)
                 if not sources:
                     print("[DYNAMIC] No official sources found")
                     fallback_msg_en = "I couldn't find an official City of Kingston page for that. Please try rephrasing, or contact 311 at 613-546-0000 for assistance."
@@ -864,19 +1028,76 @@ async def query_pinecone_stream(request: QueryRequest):
                     yield f"data: {json.dumps({'type': 'text', 'content': fallback_msg, 'done': True})}\n\n"
                     return
 
-                # Deterministic prototype behavior: always provide official links (citations) for dynamic topics.
-                lines_en = [
-                    "For the latest updates, please check these official City of Kingston pages:",
-                ]
-                for i, s in enumerate(sources, start=1):
-                    title = s.get("title") or f"Source {i}"
-                    url = s.get("url") or ""
-                    if url:
-                        lines_en.append(f"{i}. {title} [{i}]")
-                lines_en.append("If you still can’t find what you need there, contact 311 at 613-546-0000.")
-                msg_en = "\n".join(lines_en).strip()
-                msg = translate_text(msg_en, user_language, "en") if user_language == "fr" else msg_en
-                yield f"data: {json.dumps({'type': 'text', 'content': msg})}\n\n"
+                if not dyn_context:
+                    # If pages are JS-heavy and we can't extract text, at least provide links.
+                    lines_en = [
+                        "For the latest updates, please check these official City of Kingston pages:",
+                    ]
+                    for i, s in enumerate(sources, start=1):
+                        title = s.get("title") or f"Source {i}"
+                        url = s.get("url") or ""
+                        if url:
+                            lines_en.append(f"{i}. {title} [{i}]")
+                    lines_en.append("If you still can’t find what you need there, contact 311 at 613-546-0000.")
+                    msg_en = "\n".join(lines_en).strip()
+                    msg = translate_text(msg_en, user_language, "en") if user_language == "fr" else msg_en
+                    yield f"data: {json.dumps({'type': 'text', 'content': msg})}\n\n"
+                else:
+                    dyn_prompt = f"""You are the City of Kingston 311 assistant.
+Answer the user's question using ONLY the official sources provided below.
+
+Rules:
+1) If the sources do not contain the answer, say: "I couldn't confirm that on official City of Kingston sources."
+2) Do NOT guess. Do NOT use outside knowledge.
+3) Include citations like [1], [2] matching the source numbers.
+4) Keep the answer clear and practical.
+
+Question: {request.query}
+
+Official sources:
+{dyn_context}
+"""
+
+                    print("[DYNAMIC] Starting OpenAI stream...")
+                    stream = openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "You answer only from provided sources and include citations."},
+                            {"role": "user", "content": dyn_prompt},
+                        ],
+                        temperature=0.1,
+                        max_tokens=700,
+                        stream=True,
+                    )
+
+                    full_answer = ""
+
+                    if user_language == "fr":
+                        for chunk in stream:
+                            try:
+                                if chunk.choices and len(chunk.choices) > 0:
+                                    delta = chunk.choices[0].delta
+                                    if hasattr(delta, "content") and delta.content:
+                                        full_answer += delta.content
+                            except Exception as chunk_error:
+                                print(f"[DYNAMIC STREAM] Error processing chunk: {chunk_error}")
+                                continue
+
+                        full_answer = re.sub(r"\s+", " ", full_answer).strip()
+                        full_answer = translate_text(full_answer, "fr", "en")
+                        words = full_answer.split()
+                        for i, word in enumerate(words):
+                            yield f"data: {json.dumps({'type': 'text', 'content': word + (' ' if i < len(words)-1 else '')})}\n\n"
+                    else:
+                        for chunk in stream:
+                            try:
+                                if chunk.choices and len(chunk.choices) > 0:
+                                    delta = chunk.choices[0].delta
+                                    if hasattr(delta, "content") and delta.content:
+                                        yield f"data: {json.dumps({'type': 'text', 'content': delta.content})}\n\n"
+                            except Exception as chunk_error:
+                                print(f"[DYNAMIC STREAM] Error processing chunk: {chunk_error}")
+                                continue
 
                 formatted_results = [
                     {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
