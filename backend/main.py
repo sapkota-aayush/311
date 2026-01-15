@@ -342,8 +342,11 @@ def classify_dynamic_bucket(query: str) -> Optional[str]:
         return "snow_removal"
 
     # Transit lost & found (common real-world question; official site is kingstontransit.ca)
-    if any(k in q for k in ["lost and found", "lost my", "lost wallet", "lost phone", "lost item"]) and any(
-        k in q for k in ["transit", "bus", "kingston transit"]
+    if any(k in q for k in ["transit", "bus", "kingston transit"]) and (
+        # common phrasings
+        any(k in q for k in ["lost and found", "lost my", "lost wallet", "lost phone", "lost item", "lost it"])
+        # or generic "lost" (e.g., "I lost it on the bus")
+        or re.search(r"\blost\b", q) is not None
     ):
         return "transit_lost_found"
 
