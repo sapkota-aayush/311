@@ -211,19 +211,31 @@ CURATED_DYNAMIC_SOURCES: dict = {
     "road_closures": [
         {
             "title": "Traffic and Road Closures",
-            "url": "https://www.cityofkingston.ca/roads-parking-and-transportation/road-closures/",
+            "url": "https://www.cityofkingston.ca/roads-parking-and-transportation/road-maintenance/road-closures/",
+        },
+        {
+            "title": "Road Closures Map",
+            "url": "https://www.cityofkingston.ca/roads-parking-and-transportation/road-maintenance/road-closures/road-closures-map/",
         }
     ],
     "snow_removal": [
         {
-            "title": "Snow Removal and Winter Maintenance",
-            "url": "https://www.cityofkingston.ca/roads-parking-and-transportation/snow-removal/",
+            "title": "Winter Maintenance",
+            "url": "https://www.cityofkingston.ca/roads-parking-and-transportation/winter-maintenance/",
+        },
+        {
+            "title": "Snow Plow Tracker",
+            "url": "https://www.cityofkingston.ca/roads-parking-and-transportation/winter-maintenance/snow-plow-tracker/",
+        },
+        {
+            "title": "Winter Parking",
+            "url": "https://www.cityofkingston.ca/roads-parking-and-transportation/parking/winter-parking/",
         }
     ],
     "transit": [
         {
-            "title": "Kingston Transit",
-            "url": "https://www.cityofkingston.ca/transit/",
+            "title": "Transit News and Notices",
+            "url": "https://www.cityofkingston.ca/news-and-notices/transit-news/",
         }
     ],
     # Optional: weather/safety page placeholder (kept empty unless you add an official Kingston source)
@@ -843,80 +855,29 @@ async def query_pinecone_stream(request: QueryRequest):
             
             # Dynamic route: official-site search first (citations required)
             if dynamic:
-                print("[DYNAMIC] Building official-site context...")
-                sources, dyn_context = build_dynamic_context(request.query, max_results=4)
-                if not dyn_context:
+                print("[DYNAMIC] Building curated official sources...")
+                sources, _dyn_context = build_dynamic_context(request.query, max_results=4)
+                if not sources:
                     print("[DYNAMIC] No official sources found")
-                    fallback_msg_en = "I couldn't confirm that on official City of Kingston sources. Please try rephrasing, or contact 311 at 613-546-0000 for assistance."
+                    fallback_msg_en = "I couldn't find an official City of Kingston page for that. Please try rephrasing, or contact 311 at 613-546-0000 for assistance."
                     fallback_msg = translate_text(fallback_msg_en, user_language, "en") if user_language == "fr" else fallback_msg_en
                     yield f"data: {json.dumps({'type': 'text', 'content': fallback_msg, 'done': True})}\n\n"
                     return
 
-                dyn_prompt = f"""You are the City of Kingston 311 assistant.
-Answer the user's question using ONLY the official sources provided below.
+                # Deterministic prototype behavior: always provide official links (citations) for dynamic topics.
+                lines_en = [
+                    "For the latest updates, please check these official City of Kingston pages:",
+                ]
+                for i, s in enumerate(sources, start=1):
+                    title = s.get("title") or f"Source {i}"
+                    url = s.get("url") or ""
+                    if url:
+                        lines_en.append(f"{i}. {title} [{i}]")
+                lines_en.append("If you still can’t find what you need there, contact 311 at 613-546-0000.")
+                msg_en = "\n".join(lines_en).strip()
+                msg = translate_text(msg_en, user_language, "en") if user_language == "fr" else msg_en
+                yield f"data: {json.dumps({'type': 'text', 'content': msg})}\n\n"
 
-Rules:
-1) If the sources do not contain the answer, say: "I couldn't confirm that on official City of Kingston sources."
-2) Do NOT guess. Do NOT use outside knowledge.
-3) Include citations like [1], [2] matching the source numbers.
-4) Keep the answer clear and practical.
-
-Question: {request.query}
-
-Official sources:
-{dyn_context}
-"""
-
-                print("[DYNAMIC] Starting OpenAI stream...")
-                stream = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You answer only from provided sources and include citations."},
-                        {"role": "user", "content": dyn_prompt},
-                    ],
-                    temperature=0.1,
-                    max_tokens=700,
-                    stream=True,
-                )
-
-                full_answer = ""
-                chunk_count = 0
-
-                if user_language == "fr":
-                    for chunk in stream:
-                        try:
-                            if chunk.choices and len(chunk.choices) > 0:
-                                delta = chunk.choices[0].delta
-                                if hasattr(delta, "content") and delta.content:
-                                    content = delta.content
-                                    full_answer += content
-                                    chunk_count += 1
-                        except Exception as chunk_error:
-                            print(f"[DYNAMIC STREAM] Error processing chunk: {chunk_error}")
-                            continue
-
-                    full_answer = re.sub(r"\s+", " ", full_answer).strip()
-                    full_answer = translate_text(full_answer, "fr", "en")
-                    for i, word in enumerate(full_answer.split()):
-                        yield f"data: {json.dumps({'type': 'text', 'content': word + (' ' if i < len(full_answer.split())-1 else '')})}\n\n"
-                else:
-                    for chunk in stream:
-                        try:
-                            if chunk.choices and len(chunk.choices) > 0:
-                                delta = chunk.choices[0].delta
-                                if hasattr(delta, "content") and delta.content:
-                                    content = delta.content
-                                    full_answer += content
-                                    chunk_count += 1
-                                    if content:
-                                        yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
-                        except Exception as chunk_error:
-                            print(f"[DYNAMIC STREAM] Error processing chunk: {chunk_error}")
-                            continue
-
-                    full_answer = re.sub(r"\s+", " ", full_answer).strip()
-
-                # Send sources as results metadata so the UI can show them
                 formatted_results = [
                     {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
                     for s in sources
