@@ -249,6 +249,16 @@ CURATED_DYNAMIC_SOURCES: dict = {
             "url": "https://www.kingstontransit.ca/lost-and-found/",
         }
     ],
+    "lost_found_general": [
+        {
+            "title": "Kingston Transit – Lost and Found",
+            "url": "https://www.kingstontransit.ca/lost-and-found/",
+        },
+        {
+            "title": "City of Kingston – Contact Us (311)",
+            "url": "https://www.cityofkingston.ca/council-and-city-administration/contact-us/",
+        },
+    ],
     # Optional: weather/safety page placeholder (kept empty unless you add an official Kingston source)
     "weather": [],
 }
@@ -256,6 +266,33 @@ CURATED_DYNAMIC_SOURCES: dict = {
 _SITEMAP_CACHE: dict = {"ts": 0.0, "items": []}  # {ts: float, items: list[dict]}
 SITEMAP_TTL_SECONDS = int(os.getenv("SITEMAP_TTL_SECONDS", "3600"))
 SITEMAP_URL = os.getenv("SITEMAP_URL", "https://www.cityofkingston.ca/sitemap.xml")
+
+# If Pinecone docs are missing source URLs, we still want at least one official link per answer
+# (except greetings), so the UI can render "Official Sources" consistently.
+CATEGORY_OFFICIAL_FALLBACK_URLS: dict = {
+    "property_tax": [
+        ("Property taxes (City of Kingston)", "https://www.cityofkingston.ca/property-taxes/"),
+        ("MyTax portal", "https://www.cityofkingston.ca/property-taxes/mytax-portal/"),
+        ("Paying your property taxes", "https://www.cityofkingston.ca/property-taxes/paying-your-property-taxes/"),
+    ],
+    "parking": [
+        ("Parking in Kingston", "https://www.cityofkingston.ca/roads-parking-and-transportation/parking/"),
+        ("On-street parking permits", "https://www.cityofkingston.ca/roads-parking-and-transportation/parking/parking-permits/"),
+    ],
+    "waste_collection": [
+        ("Collection calendar", "https://www.cityofkingston.ca/garbage-and-recycling/collection-calendar/"),
+        ("Garbage and recycling", "https://www.cityofkingston.ca/garbage-and-recycling/"),
+    ],
+    "hazardous_waste": [
+        ("Household hazardous waste", "https://www.cityofkingston.ca/garbage-and-recycling/hazardous-waste/"),
+    ],
+    "fire_permits": [
+        ("Fire permits and outdoor burning", "https://www.cityofkingston.ca/emergency-services-and-public-health/fire-and-rescue/fire-permits/"),
+    ],
+    "noise": [
+        ("Noise and nuisance bylaws", "https://www.cityofkingston.ca/bylaws-and-animal-services/commonly-requested-bylaws/noise-and-nuisance/"),
+    ],
+}
 
 
 def _is_allowed_domain(url: str) -> bool:
@@ -309,6 +346,11 @@ def classify_dynamic_bucket(query: str) -> Optional[str]:
         k in q for k in ["transit", "bus", "kingston transit"]
     ):
         return "transit_lost_found"
+
+    # Generic lost item (wallet/phone/etc.) without specifying the service:
+    # don't send "policy KB" fallback; ask one clarifying question + provide official links.
+    if "lost" in q and any(k in q for k in ["wallet", "phone", "purse", "bag", "id", "keys", "item"]):
+        return "lost_found_general"
 
     if any(k in q for k in ["transit", "bus", "kingston transit", "route", "detour", "delay", "delayed", "cancelled", "canceled"]):
         return "transit"
@@ -505,6 +547,34 @@ def build_dynamic_context(query: str, max_results: int = 4) -> tuple[list[dict],
             break
 
     return usable_sources, "\n\n".join(context_blocks).strip()
+
+
+def _ensure_official_links_for_category(formatted_results: list[dict], category: str) -> list[dict]:
+    """
+    Ensure at least one result has a source_url for the UI, by adding a category fallback link
+    when Pinecone metadata lacks URLs.
+    """
+    if formatted_results and any((r.get("source_url") or "").strip() for r in formatted_results):
+        return formatted_results
+
+    fallbacks = CATEGORY_OFFICIAL_FALLBACK_URLS.get(category) or []
+    if not fallbacks:
+        return formatted_results
+
+    existing_urls = {((r.get("source_url") or "").strip()) for r in (formatted_results or []) if r.get("source_url")}
+    for title, url in fallbacks:
+        if url not in existing_urls:
+            return [
+                {
+                    "score": 1.0,
+                    "content": title,
+                    "category": category,
+                    "topic": category,
+                    "source_url": url,
+                }
+            ] + (formatted_results or [])
+
+    return formatted_results
 
 # Initialize LangChain LLM for answer generation
 llm = ChatOpenAI(
@@ -1019,6 +1089,28 @@ async def query_pinecone_stream(request: QueryRequest):
             
             # Dynamic route: official-site search first (citations required)
             if dynamic:
+                bucket = classify_dynamic_bucket(request.query)
+                if bucket == "lost_found_general":
+                    # Deterministic "next step" for a vague lost-item question:
+                    # ask one clarifying question, and provide official links immediately.
+                    msg_en = (
+                        "I can help — quick question first: did you lose it on a Kingston Transit bus?\n\n"
+                        "If YES: use Kingston Transit Lost & Found to report it.\n"
+                        "If NO / not sure: contact the City of Kingston (311) and they can direct you to the right service.\n"
+                    )
+                    msg = translate_text(msg_en, user_language, "en") if user_language == "fr" else msg_en
+                    yield f"data: {json.dumps({'type': 'text', 'content': msg})}\n\n"
+
+                    sources, _ = build_dynamic_context(request.query, max_results=6)
+                    formatted_results = [
+                        {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
+                        for s in sources
+                        if s.get("url")
+                    ]
+                    yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+
                 print("[DYNAMIC] Building official-site context (sitemap + fetch)...")
                 sources, dyn_context = build_dynamic_context(request.query, max_results=6)
                 if not sources:
@@ -1027,6 +1119,14 @@ async def query_pinecone_stream(request: QueryRequest):
                     fallback_msg = translate_text(fallback_msg_en, user_language, "en") if user_language == "fr" else fallback_msg_en
                     yield f"data: {json.dumps({'type': 'text', 'content': fallback_msg, 'done': True})}\n\n"
                     return
+
+                # Send official links immediately (before streaming) so the UI can render them reliably.
+                formatted_results = [
+                    {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
+                    for s in sources
+                    if s.get("url")
+                ]
+                yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
 
                 if not dyn_context:
                     # If pages are JS-heavy and we can't extract text, at least provide links.
@@ -1037,11 +1137,13 @@ async def query_pinecone_stream(request: QueryRequest):
                         title = s.get("title") or f"Source {i}"
                         url = s.get("url") or ""
                         if url:
-                            lines_en.append(f"{i}. {title} [{i}]")
+                            lines_en.append(f"{i}. {title}: {url} [{i}]")
                     lines_en.append("If you still can’t find what you need there, contact 311 at 613-546-0000.")
                     msg_en = "\n".join(lines_en).strip()
                     msg = translate_text(msg_en, user_language, "en") if user_language == "fr" else msg_en
                     yield f"data: {json.dumps({'type': 'text', 'content': msg})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
                 else:
                     dyn_prompt = f"""You are the City of Kingston 311 assistant.
 Answer the user's question using ONLY the official sources provided below.
@@ -1051,6 +1153,7 @@ Rules:
 2) Do NOT guess. Do NOT use outside knowledge.
 3) Include citations like [1], [2] matching the source numbers.
 4) Keep the answer clear and practical.
+5) Do not add extra sections like "Official links" — citations [1], [2] are enough.
 
 Question: {request.query}
 
@@ -1094,17 +1197,15 @@ Official sources:
                                 if chunk.choices and len(chunk.choices) > 0:
                                     delta = chunk.choices[0].delta
                                     if hasattr(delta, "content") and delta.content:
+                                        full_answer += delta.content
                                         yield f"data: {json.dumps({'type': 'text', 'content': delta.content})}\n\n"
                             except Exception as chunk_error:
                                 print(f"[DYNAMIC STREAM] Error processing chunk: {chunk_error}")
                                 continue
 
-                formatted_results = [
-                    {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
-                    for s in sources
-                    if s.get("url")
-                ]
-                yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"
+                    # Do not inject link blocks into the answer text.
+                    # The UI renders official links from the 'results' event below for consistency.
+
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
 
@@ -1113,7 +1214,10 @@ Official sources:
                 print(f"[STREAM] Question is out of scope")
                 answer_en = "I'm the City of Kingston 311 assistant. I couldn't find that in our policies knowledge base. You can try asking about City services/policies, or contact 311 at 613-546-0000 for assistance."
                 answer = translate_text(answer_en, user_language, "en") if user_language == "fr" else answer_en
-                yield f"data: {json.dumps({'type': 'text', 'content': answer, 'done': True})}\n\n"
+                yield f"data: {json.dumps({'type': 'text', 'content': answer})}\n\n"
+                # Always provide at least one official link for non-greeting responses
+                yield f"data: {json.dumps({'type': 'results', 'results': [{'score': 1.0, 'content': 'City of Kingston – Contact Us (311)', 'category': 'official', 'topic': 'contact', 'source_url': 'https://www.cityofkingston.ca/council-and-city-administration/contact-us/'}]})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
             
             # Handle live lookups
@@ -1124,7 +1228,9 @@ Official sources:
                 else:
                     answer_en = f"Garbage collection days depend on your address. Please provide your address (e.g., '576 Division Street') and I'll direct you to the City's official collection calendar where you can check your specific schedule: {calendar_url}"
                 answer = translate_text(answer_en, user_language, "en") if user_language == "fr" else answer_en
-                yield f"data: {json.dumps({'type': 'text', 'content': answer, 'done': True})}\n\n"
+                yield f"data: {json.dumps({'type': 'text', 'content': answer})}\n\n"
+                yield f"data: {json.dumps({'type': 'results', 'results': [{'score': 1.0, 'content': 'Collection calendar', 'category': 'waste_collection', 'topic': 'collection_calendar', 'source_url': calendar_url}]})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
             
             # Generate embedding and query Pinecone
@@ -1148,6 +1254,7 @@ Official sources:
                 expected_category=category,
                 top_k=request.top_k,
             )
+            formatted_results = _ensure_official_links_for_category(formatted_results, category)
             
             # Quick fallback if no context found
             if not context_parts:
@@ -1364,6 +1471,7 @@ Official sources:
                 correction = translate_text(correction_en, user_language, "en") if user_language == "fr" else correction_en
                 yield f"data: {json.dumps({'type': 'text', 'content': correction})}\n\n"
                 formatted_results = []
+            formatted_results = _ensure_official_links_for_category(formatted_results, category)
             
             # Send results metadata
             yield f"data: {json.dumps({'type': 'results', 'results': formatted_results})}\n\n"

@@ -232,7 +232,8 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
       // Detect numbered lists
       const numberedMatch = cleaned.match(/^(\d+)\.\s*(.+)$/);
       if (numberedMatch) {
-        flushList();
+        // Only flush if we're switching list types
+        if (listType && listType !== 'numbered') flushList();
         listType = 'numbered';
         currentList.push(numberedMatch[2].trim());
         return;
@@ -240,7 +241,8 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
       
       // Detect bullet lists
       if (cleaned.match(/^[-*•]\s+/)) {
-        flushList();
+        // Only flush if we're switching list types
+        if (listType && listType !== 'bullet') flushList();
         listType = 'bullet';
         const content = cleaned.replace(/^[-*•]\s+/, '').trim();
         if (content) {
@@ -325,32 +327,74 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
   // Function to determine if results should be shown
   const shouldShowResults = (messageText, results) => {
     if (!messageText || !results || results.length === 0) return false;
+
+    // If there are no links, there's nothing to show.
+    const hasLinks = results.some(r => r && r.source_url);
+    if (!hasLinks) return false;
     
-    const textLower = messageText.toLowerCase();
-    const greetingPatterns = [
-      "hi", "hello", "hey", "how can i help", "what can i help",
-      "how are you", "good morning", "good afternoon", "good evening"
+    const text = (messageText || '').trim();
+    const textLower = text.toLowerCase();
+
+    // Only hide sources for actual greeting-style responses.
+    // IMPORTANT: avoid substring matches like "this" containing "hi".
+    const greetingRegexes = [
+      /^(hi|hello|hey)\b/i,
+      /^good (morning|afternoon|evening)\b/i,
+      /^how are you\b/i,
+      /^how can i help\b/i,
+      /^what can i help\b/i,
     ];
-    
-    if (greetingPatterns.some(pattern => textLower.includes(pattern))) {
+
+    if (greetingRegexes.some(r => r.test(textLower))) {
       return false;
     }
     
-    if (messageText.split(' ').length < 10 && textLower.includes('help')) {
+    if (text.split(' ').length < 10 && /\bhelp\b/i.test(textLower)) {
       return false;
     }
-    
-    const meaningfulResults = results.filter(result => {
-      const content = (result.content || '').toLowerCase();
-      return !content.includes('section menu') && 
-             !content.includes('learn more') &&
-             content.length > 50;
-    });
-    
-    return meaningfulResults.length > 0;
+
+    // For any real Q&A response: if the backend gave us links, show them.
+    return true;
   };
 
   const t = translations[language];
+
+  const getSourceLabel = (result) => {
+    const url = (result?.source_url || '').trim();
+    let host = '';
+    try {
+      host = url ? new URL(url).hostname.replace(/^www\./, '') : '';
+    } catch (e) {
+      host = '';
+    }
+
+    const category = (result?.category || '').toLowerCase();
+    // Dynamic search already provides human titles in `content`
+    if (category === 'dynamic_search') {
+      const title = (result?.content || '').trim();
+      return title || host || 'Official source';
+    }
+
+    // RAG results often have `content` as a long snippet; prefer topic/domain for a clean label.
+    const topic = (result?.topic || '').toString().trim();
+    if (topic) return topic.replace(/_/g, ' ');
+    return host || 'Official source';
+  };
+
+  const dedupeSources = (results, limit = 6) => {
+    if (!Array.isArray(results)) return [];
+    const out = [];
+    const seen = new Set();
+    for (const r of results) {
+      const url = (r?.source_url || '').trim();
+      if (!url) continue;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push(r);
+      if (out.length >= limit) break;
+    }
+    return out;
+  };
 
   return (
     <div className="chat-interface">
@@ -438,7 +482,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
                   <div className="message-sources">
                     <p className="sources-label">Official Sources</p>
                     <div className="sources-list">
-                      {message.results.filter(r => r.source_url).slice(0, 3).map((result, idx) => (
+                      {dedupeSources(message.results, 6).map((result, idx) => (
                         <a 
                           key={idx}
                           href={result.source_url} 
@@ -447,7 +491,9 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
                           className="source-link"
                         >
                           <span className="material-symbols-outlined">link</span>
-                          <span>{result.topic?.replace(/_/g, ' ') || 'Learn more'}</span>
+                          <span>
+                            {getSourceLabel(result)}
+                          </span>
                         </a>
                       ))}
                     </div>

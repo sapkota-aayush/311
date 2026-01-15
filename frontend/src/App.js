@@ -2,14 +2,15 @@ import React, { useState } from 'react';
 import './App.css';
 import LandingPage from './components/LandingPage';
 import ChatInterface from './components/ChatInterface';
+import LatestUpdates from './components/LatestUpdates';
 
 function App() {
-  const [showChat, setShowChat] = useState(false);
+  const [view, setView] = useState('home'); // 'home' | 'chat' | 'updates'
   const [initialQuery, setInitialQuery] = useState('');
 
   const handleStartChat = (query = '') => {
     setInitialQuery(query);
-    setShowChat(true);
+    setView('chat');
   };
 
   const handleServiceClick = (service) => {
@@ -22,11 +23,21 @@ function App() {
     handleStartChat(queries[service] || '');
   };
 
-  if (showChat) {
-    return <ChatInterface initialQuery={initialQuery} onBack={() => setShowChat(false)} />;
+  if (view === 'chat') {
+    return <ChatInterface initialQuery={initialQuery} onBack={() => setView('home')} />;
   }
 
-  return <LandingPage onStartChat={handleStartChat} onServiceClick={handleServiceClick} />;
+  if (view === 'updates') {
+    return <LatestUpdates onBack={() => setView('home')} />;
+  }
+
+  return (
+    <LandingPage
+      onStartChat={handleStartChat}
+      onServiceClick={handleServiceClick}
+      onShowUpdates={() => setView('updates')}
+    />
+  );
 }
 
 export default App;

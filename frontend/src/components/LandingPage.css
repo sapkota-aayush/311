@@ -258,6 +258,161 @@
   margin-bottom: 3rem;
 }
 
+.updates-cta {
+  display: flex;
+  justify-content: center;
+  margin-top: -1.5rem;
+  margin-bottom: 2.25rem;
+  padding: 0 1rem;
+}
+
+.updates-cta-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #0f172a;
+  font-weight: 800;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  box-shadow: 0 10px 26px -18px rgba(0, 0, 0, 0.25);
+}
+
+.updates-cta-button:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(0, 83, 155, 0.18);
+}
+
+.updates-cta-button .material-symbols-outlined {
+  font-size: 1.125rem;
+  color: #00539B;
+}
+
+.most-asked {
+  max-width: 900px;
+  margin: 0 auto 2.5rem auto;
+  padding: 0 1rem;
+}
+
+.most-asked-header {
+  text-align: center;
+  margin-bottom: 1rem;
+}
+
+.most-asked-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #111827;
+}
+
+.most-asked-subtitle {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.875rem;
+  color: #64748b;
+}
+
+.most-asked-shell {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 1.5rem;
+  box-shadow:
+    0 18px 40px -24px rgba(0, 0, 0, 0.28),
+    0 10px 24px -20px rgba(0, 83, 155, 0.25);
+  padding: 1.25rem 1.25rem 0.75rem 1.25rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.most-asked-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(900px 220px at 18% 0%, rgba(0, 83, 155, 0.10), transparent 60%),
+    radial-gradient(700px 240px at 85% 0%, rgba(255, 255, 255, 0.55), transparent 55%);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.most-asked-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.most-asked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-width: 780px;
+  margin: 0 auto;
+}
+
+.most-asked-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.9rem 0.75rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+  box-shadow: none;
+  position: relative;
+}
+
+.most-asked-item::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(0, 83, 155, 0.5);
+  box-shadow: 0 0 0 6px rgba(0, 83, 155, 0.06);
+  flex-shrink: 0;
+}
+
+.most-asked-item:not(:last-child) {
+  border-bottom: 1px solid rgba(229, 231, 235, 0.75);
+  border-radius: 0;
+}
+
+.most-asked-item:first-child {
+  border-top-left-radius: 0.9rem;
+  border-top-right-radius: 0.9rem;
+}
+
+.most-asked-item:last-child {
+  border-bottom-left-radius: 0.9rem;
+  border-bottom-right-radius: 0.9rem;
+}
+
+.most-asked-item:hover {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(0, 83, 155, 0.16);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px -18px rgba(0, 83, 155, 0.25);
+}
+
+.most-asked-text {
+  font-size: 0.9375rem;
+  font-weight: 650;
+  color: #27303f;
+  line-height: 1.35;
+  flex: 1;
+}
+
 .start-chat-button {
   display: flex;
   align-items: center;
@@ -319,6 +474,7 @@
   max-width: 700px;
   margin-left: auto;
   margin-right: auto;
+  margin-bottom: 1.75rem; /* space before Most asked questions */
 }
 
 .example-label {
@@ -632,6 +788,35 @@
     font-size: 0.875rem;
   }
 
+  .updates-cta {
+    margin-top: -0.75rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .updates-cta-button {
+    width: 100%;
+    justify-content: center;
+    border-radius: 1.25rem;
+  }
+
+  .most-asked {
+    margin-bottom: 1.5rem;
+  }
+
+  .most-asked-shell {
+    padding: 1rem 1rem 0.5rem 1rem;
+    border-radius: 1.25rem;
+  }
+
+  .most-asked-item {
+    padding: 0.75rem 0.875rem;
+    border-radius: 0.875rem;
+  }
+
+  .most-asked-text {
+    font-size: 0.875rem;
+  }
+
   .button-icon {
     width: 28px;
     height: 28px;
@@ -651,6 +836,7 @@
 
   .example-questions {
     margin-top: 1rem;
+    margin-bottom: 1.25rem; /* space before Most asked questions on mobile */
   }
 
   .example-label {

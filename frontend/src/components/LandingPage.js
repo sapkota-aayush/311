@@ -1,7 +1,18 @@
 import React, { useState } from 'react';
 import './LandingPage.css';
 
-const LandingPage = ({ onStartChat }) => {
+const LandingPage = ({ onStartChat, onShowUpdates }) => {
+  const mostAskedQuestions = [
+    'When is my garbage collection day?',
+    'What are the noise bylaw quiet hours in Kingston?',
+    'How do I apply for a parking permit?',
+    'How do I pay a parking ticket?',
+    'What are the property tax payment options?',
+    'Do I need a fire permit for a backyard fire pit in Kingston?',
+    'Where can I dispose of hazardous waste?',
+    'How do I report a pothole?',
+  ];
+
   const exampleQuestions = [
     'How do I apply for a parking permit?',
     'When is my garbage collection day?',
@@ -70,6 +81,17 @@ const LandingPage = ({ onStartChat }) => {
             </button>
           </div>
 
+          <div className="updates-cta">
+            <button
+              className="updates-cta-button"
+              onClick={() => onShowUpdates && onShowUpdates()}
+            >
+              <span className="material-symbols-outlined">news</span>
+              See latest information
+              <span className="material-symbols-outlined">arrow_forward</span>
+            </button>
+          </div>
+
           <div className="example-questions">
             <p className="example-label">Try asking:</p>
             <div className="scrolling-ticker">
@@ -81,6 +103,26 @@ const LandingPage = ({ onStartChat }) => {
                     onClick={() => onStartChat(question)}
                   >
                     {question}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="most-asked">
+            <div className="most-asked-shell">
+              <div className="most-asked-header">
+                <h2 className="most-asked-title">Most asked questions</h2>
+                <p className="most-asked-subtitle">Tap one to start.</p>
+              </div>
+              <div className="most-asked-list">
+                {mostAskedQuestions.map((q) => (
+                  <button
+                    key={q}
+                    className="most-asked-item"
+                    onClick={() => onStartChat(q)}
+                  >
+                    <span className="most-asked-text">{q}</span>
                   </button>
                 ))}
               </div>
