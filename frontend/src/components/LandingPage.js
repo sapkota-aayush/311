@@ -59,37 +59,51 @@ const LandingPage = ({ onStartChat, onShowUpdates }) => {
       <main className="landing-main">
         <div className="landing-content">
           <div className="hero-section">
+            <div className="hero-badge">
+              <span className="material-symbols-outlined">verified</span>
+              Official sources, clearly cited
+            </div>
             <h1 className="hero-title">
-              Ask Anything About<br/>
-              <span className="hero-subtitle">City of Kingston</span>
+              Kingston 311 Assistant<br />
+              <span className="hero-subtitle">Answers you can verify</span>
             </h1>
             <p className="hero-description">
-              Get answers to all your questions about city services, policies, and information
+              Ask about bylaws, permits, waste, parking, taxes, and city services — with official links and updated timestamps when available.
             </p>
           </div>
 
-          <div className="cta-section">
-            <button 
-              className="start-chat-button"
-              onClick={() => onStartChat('')}
-            >
-              <span className="button-icon">
-                <span className="material-symbols-outlined">chat_bubble</span>
-              </span>
-              <span className="button-text">Get All Your Answers</span>
-              <span className="material-symbols-outlined">arrow_forward</span>
-            </button>
-          </div>
+          <div className="cta-grid">
+            <div className="cta-card cta-primary">
+              <div className="cta-card-top">
+                <div className="cta-icon">
+                  <span className="material-symbols-outlined">chat_bubble</span>
+                </div>
+                <div className="cta-copy">
+                  <div className="cta-title">Get answers</div>
+                  <div className="cta-subtitle">Ask a question and see the official sources underneath.</div>
+                </div>
+              </div>
+              <button className="cta-button" onClick={() => onStartChat('')}>
+                Start chat
+                <span className="material-symbols-outlined">arrow_forward</span>
+              </button>
+            </div>
 
-          <div className="updates-cta">
-            <button
-              className="updates-cta-button"
-              onClick={() => onShowUpdates && onShowUpdates()}
-            >
-              <span className="material-symbols-outlined">news</span>
-              See latest information
-              <span className="material-symbols-outlined">arrow_forward</span>
-            </button>
+            <div className="cta-card">
+              <div className="cta-card-top">
+                <div className="cta-icon alt">
+                  <span className="material-symbols-outlined">news</span>
+                </div>
+                <div className="cta-copy">
+                  <div className="cta-title">Latest information</div>
+                  <div className="cta-subtitle">Browse official 2026 updates and alerts from the City.</div>
+                </div>
+              </div>
+              <button className="cta-button secondary" onClick={() => onShowUpdates && onShowUpdates()}>
+                See latest
+                <span className="material-symbols-outlined">arrow_forward</span>
+              </button>
+            </div>
           </div>
 
           <div className="example-questions">
