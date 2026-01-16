@@ -6,6 +6,11 @@ A web app that answers City of Kingston service questions using **RAG (Pinecone 
 
 - **Frontend**: `https://cityofkingston.aayussh.com/`
 
+## Demo Video
+
+- **YouTube**: `https://youtu.be/jNWdu4AaBdM`
+- **Script + judging checklist**: see [`VIDEO.md`](./VIDEO.md)
+
 ## Project Structure
 
 ```
