@@ -1,6 +1,10 @@
-# City of Kingston 311 Chatbot
+# City of Kingston 311 Assistant
 
-A RAG-powered chatbot for answering City of Kingston 311 questions using Pinecone and OpenAI.
+A web app that answers City of Kingston service questions using **RAG (Pinecone + OpenAI)** and (when needed) **official, allowlisted sources**. It also includes a **Latest Information** page, optional **voice (Whisper STT + TTS)**, and a **Report** button to share feedback on answers (no backend required for reporting).
+
+## Live Demo
+
+- **Frontend**: `https://cityofkingston.aayussh.com/`
 
 ## Project Structure
 
@@ -22,7 +26,17 @@ CityOfKingston/
 └── README.md         # This file
 ```
 
-## Quick Start
+## Features
+
+- **Chat with official sources**: Responses show **Official Sources** links (except greetings).
+- **Latest Information**: A curated “Latest Information” page (currently showing **2026** items).
+- **Voice**:
+  - **Speech-to-text** via `/audio/transcribe` (Whisper)
+  - **Text-to-speech** via `/audio/speak` (OpenAI TTS)
+- **Report a response**: “Report” button on bot messages creates a shareable payload (copy/download).
+- **Desktop-friendly UI**: Wider, clean layout for screen recording.
+
+## Quick Start (Local)
 
 ### Prerequisites
 - Python 3.9+
@@ -48,12 +62,13 @@ export PINECONE_API_KEY='your-pinecone-key'
 export OPENAI_API_KEY='your-openai-key'
 ```
 
-4. Run the server:
+4. Run the server (recommended):
 ```bash
-python main.py
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Backend runs on `http://localhost:8000`
+API docs: `http://localhost:8000/docs`
 
 ### Frontend Setup
 
@@ -74,7 +89,7 @@ export REACT_APP_API_URL='http://localhost:8000'
 
 4. Start the development server:
 ```bash
-npm start
+BROWSER=none npm start
 ```
 
 Frontend runs on `http://localhost:3000`
@@ -92,6 +107,8 @@ Frontend runs on `http://localhost:3000`
     "top_k": 3
   }
   ```
+- `POST /audio/transcribe` - Speech-to-text (Whisper)
+- `POST /audio/speak` - Text-to-speech (MP3)
 
 ## Development
 
