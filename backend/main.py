@@ -3,7 +3,7 @@ FastAPI Backend for City of Kingston 311 Chatbot
 Using LangChain for RAG pipeline
 """
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
@@ -21,6 +21,7 @@ from pinecone import Pinecone
 from openai import OpenAI
 import json
 import asyncio
+import io
 
 app = FastAPI(title="City of Kingston 311 Chatbot API")
 
@@ -139,6 +140,7 @@ def _select_context_and_results(
             "category": md.get("category", "") or "",
             "topic": md.get("topic", "") or "",
             "source_url": md.get("source_url", "") or "",
+            "lastmod": md.get("lastmod") or md.get("updated_at") or md.get("updated") or None,
         }
 
     items = [to_item(m) for m in (matches or [])]
@@ -173,6 +175,7 @@ def _select_context_and_results(
                     "category": item.get("category", ""),
                     "topic": item.get("topic", ""),
                     "source_url": url,
+                    "lastmod": item.get("lastmod"),
                 }
             )
             context.append(cleaned[:2000])
@@ -476,6 +479,64 @@ def _pick_latest(items: list[dict], url_substring: str, limit: int = 3) -> list[
     return urls
 
 
+def _sitemap_lastmod_lookup(items: list[dict]) -> dict:
+    """
+    Build {url: lastmod} map from sitemap items.
+    """
+    out: dict = {}
+    for it in items or []:
+        loc = (it.get("loc") or "").strip()
+        lastmod = (it.get("lastmod") or "").strip()
+        if not loc or not lastmod:
+            continue
+        # Normalize URLs so sitemap lookups still work if our stored URLs differ by
+        # www, trailing slash, or query/hash.
+        try:
+            u = urlparse(loc)
+            netloc = u.netloc.lower().replace("www.", "")
+            path = (u.path or "").rstrip("/")
+            norm = urlunparse((u.scheme.lower() or "https", netloc, path, "", "", ""))
+        except Exception:
+            norm = loc.rstrip("/")
+
+        if norm and norm not in out:
+            out[norm] = lastmod
+    return out
+
+
+def _annotate_results_lastmod(results: list[dict]) -> list[dict]:
+    """
+    Add `lastmod` for cityofkingston.ca URLs using the City sitemap (cached).
+    This gives a meaningful "last updated" date instead of vague "checked today".
+    """
+    if not results:
+        return results
+
+    try:
+        items = _fetch_sitemap_items()
+        lastmod_by_url = _sitemap_lastmod_lookup(items)
+    except Exception:
+        lastmod_by_url = {}
+
+    for r in results:
+        url = (r.get("source_url") or "").strip()
+        if not url or r.get("lastmod"):
+            continue
+        if "cityofkingston.ca" in url:
+            try:
+                u = urlparse(url)
+                netloc = u.netloc.lower().replace("www.", "")
+                path = (u.path or "").rstrip("/")
+                norm = urlunparse((u.scheme.lower() or "https", netloc, path, "", "", ""))
+            except Exception:
+                norm = url.rstrip("/")
+
+            lm = lastmod_by_url.get(norm)
+            if lm:
+                r["lastmod"] = lm
+    return results
+
+
 def _tokenize_query_for_match(query: str) -> list[str]:
     q = (query or "").lower()
     q = re.sub(r"[^a-z0-9\s-]+", " ", q)
@@ -580,6 +641,7 @@ def select_dynamic_sources(bucket: Optional[str], query: str, max_results: int =
     base = list(CURATED_DYNAMIC_SOURCES.get(bucket, []) if bucket else [])
 
     items = _fetch_sitemap_items()
+    lastmod_by_url = _sitemap_lastmod_lookup(items)
     extra_urls: list[str] = []
     keyword_urls: list[str] = []
 
@@ -635,7 +697,8 @@ def select_dynamic_sources(bucket: Optional[str], query: str, max_results: int =
         if not _is_allowed_domain(url):
             return
         seen.add(url)
-        out.append({"title": title, "url": url})
+        lastmod = lastmod_by_url.get(url)
+        out.append({"title": title, "url": url, "lastmod": lastmod})
 
     # Prefer specific keyword-matched pages first, then recent pattern pages, then curated hubs.
     for url in keyword_urls:
@@ -1254,7 +1317,7 @@ async def query_pinecone_stream(request: QueryRequest):
 
                     sources, _ = build_dynamic_context(request.query, max_results=6)
                     formatted_results = [
-                        {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
+                        {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", ""), "lastmod": s.get("lastmod")}
                         for s in sources
                         if s.get("url")
                     ]
@@ -1273,7 +1336,7 @@ async def query_pinecone_stream(request: QueryRequest):
 
                 # Send official links immediately (before streaming) so the UI can render them reliably.
                 formatted_results = [
-                    {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", "")}
+                    {"score": 1.0, "content": s.get("title", ""), "category": "dynamic_search", "topic": "official_search", "source_url": s.get("url", ""), "lastmod": s.get("lastmod")}
                     for s in sources
                     if s.get("url")
                 ]
@@ -1367,7 +1430,7 @@ Official sources:
                 answer = translate_text(answer_en, user_language, "en") if user_language == "fr" else answer_en
                 yield f"data: {json.dumps({'type': 'text', 'content': answer})}\n\n"
                 # Always provide at least one official link for non-greeting responses
-                yield f"data: {json.dumps({'type': 'results', 'results': [{'score': 1.0, 'content': 'City of Kingston – Contact Us (311)', 'category': 'official', 'topic': 'contact', 'source_url': 'https://www.cityofkingston.ca/council-and-city-administration/contact-us/'}]})}\n\n"
+                yield f"data: {json.dumps({'type': 'results', 'results': _ensure_official_links_for_category([{'score': 1.0, 'content': 'City of Kingston – Contact Us (311)', 'category': 'official', 'topic': 'contact', 'source_url': 'https://www.cityofkingston.ca/council-and-city-administration/contact-us/'}], 'official')})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
             
@@ -1380,7 +1443,7 @@ Official sources:
                     answer_en = f"Garbage collection days depend on your address. Please provide your address (e.g., '576 Division Street') and I'll direct you to the City's official collection calendar where you can check your specific schedule: {calendar_url}"
                 answer = translate_text(answer_en, user_language, "en") if user_language == "fr" else answer_en
                 yield f"data: {json.dumps({'type': 'text', 'content': answer})}\n\n"
-                yield f"data: {json.dumps({'type': 'results', 'results': [{'score': 1.0, 'content': 'Collection calendar', 'category': 'waste_collection', 'topic': 'collection_calendar', 'source_url': calendar_url}]})}\n\n"
+                yield f"data: {json.dumps({'type': 'results', 'results': _ensure_official_links_for_category([{'score': 1.0, 'content': 'Collection calendar', 'category': 'waste_collection', 'topic': 'collection_calendar', 'source_url': calendar_url}], 'waste_collection')})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
             
@@ -1406,6 +1469,7 @@ Official sources:
                 top_k=request.top_k,
             )
             formatted_results = _ensure_official_links_for_category(formatted_results, category)
+            formatted_results = _annotate_results_lastmod(formatted_results)
             
             # Quick fallback if no context found
             if not context_parts:
@@ -1830,6 +1894,84 @@ async def health_check():
             "status": "unhealthy",
             "error": str(e)
         }
+
+
+@app.post("/audio/transcribe")
+async def audio_transcribe(audio: UploadFile = File(...), language: Optional[str] = None):
+    """
+    Speech-to-text using an AI model (Whisper).
+    Notes:
+    - We do NOT store audio.
+    - Audio is sent to the configured model provider for transcription.
+    """
+    try:
+        data = await audio.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+
+        # OpenAI SDK expects a file-like object with a name
+        file_obj = io.BytesIO(data)
+        file_obj.name = audio.filename or "audio.webm"
+
+        params = {"model": "whisper-1", "file": file_obj}
+        if language and language in ("en", "fr"):
+            params["language"] = "fr" if language == "fr" else "en"
+
+        result = openai_client.audio.transcriptions.create(**params)
+        text = (getattr(result, "text", None) or "").strip()
+        return {"text": text}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
+
+class SpeakRequest(BaseModel):
+    text: str
+    language: Optional[str] = "en"
+    voice: Optional[str] = "alloy"
+
+
+@app.post("/audio/speak")
+async def audio_speak(req: SpeakRequest):
+    """
+    Text-to-speech using an AI model.
+    Returns an MP3 audio payload.
+    """
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Missing text")
+
+    voice = (req.voice or "alloy").strip()
+    try:
+        # Keep payload reasonable; avoid huge TTS requests
+        safe_text = text[:4000]
+
+        resp = openai_client.audio.speech.create(
+            model="tts-1",
+            voice=voice,
+            input=safe_text,
+            # OpenAI Python SDK uses `response_format` (not `format`)
+            response_format="mp3",
+        )
+
+        audio_bytes = None
+        # Different SDK versions expose different accessors
+        if isinstance(resp, (bytes, bytearray)):
+            audio_bytes = bytes(resp)
+        elif hasattr(resp, "iter_bytes"):
+            audio_bytes = b"".join(resp.iter_bytes())
+        elif hasattr(resp, "read"):
+            audio_bytes = resp.read()
+        elif hasattr(resp, "content"):
+            audio_bytes = resp.content
+
+        if not audio_bytes:
+            raise RuntimeError("No audio content returned from TTS")
+
+        return Response(content=audio_bytes, media_type="audio/mpeg")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
 
 
 if __name__ == "__main__":
