@@ -6,6 +6,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
   const [input, setInput] = useState(initialQuery);
   const [loading, setLoading] = useState(false);
   const [language, setLanguage] = useState('en'); // 'en' or 'fr'
+  const [showDialog, setShowDialog] = useState(true);
   const messagesContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -418,136 +419,164 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     return out;
   };
 
+  const handleLanguageSelection = (selectedLanguage) => {
+    setLanguage(selectedLanguage);
+    setShowDialog(false);
+  };
+
   return (
     <div className="chat-interface">
-      {onBack && (
-        <div className="chat-header">
-          <button className="back-button" onClick={onBack}>
-            <img 
-              src="/Black-Kingston-Logo.png" 
-              alt="City of Kingston" 
-              className="header-logo"
-            />
-            <span className="material-symbols-outlined">arrow_back</span>
-            {t.backToHome}
-          </button>
-          <div className="language-selector">
-            <select 
-              value={language} 
-              onChange={(e) => setLanguage(e.target.value)}
-              className="language-select"
-            >
-              <option value="en">English</option>
-              <option value="fr">Français</option>
-            </select>
+      {showDialog && (
+        <div className="language-dialog">
+          <div className="dialog-content">
+            <h2>Welcome to Kingston AI Assistant</h2>
+            <p>
+              This assistant is trained to provide information sourced only from the official website of the City of Kingston. 
+              While it strives to provide accurate information, it may occasionally make mistakes. If you notice any errors, 
+              the assistant will attempt to correct them. Please verify important information at 
+              <a href="https://www.cityofkingston.ca" target="_blank" rel="noopener noreferrer"> kingston.ca</a>. 
+              Your data is not stored.
+            </p>
+            <p>Please select your preferred language:</p>
+            <div className="language-options">
+              <button onClick={() => handleLanguageSelection('en')} className="language-select">English</button>
+              <button onClick={() => handleLanguageSelection('fr')} className="language-select">Français</button>
+            </div>
           </div>
         </div>
       )}
-      {!onBack && (
-        <div className="chat-header-top">
-          <div className="language-selector">
-            <select 
-              value={language} 
-              onChange={(e) => setLanguage(e.target.value)}
-              className="language-select"
-            >
-              <option value="en">English</option>
-              <option value="fr">Français</option>
-            </select>
-          </div>
-        </div>
-      )}
-      <div className="messages-container" ref={messagesContainerRef}>
-        {messages.length === 0 && (
-          <div className="welcome-section">
-            <h1 className="welcome-title">{t.welcomeTitle}</h1>
-            <p className="welcome-subtitle">{t.welcomeSubtitle}</p>
-          </div>
-        )}
-        {messages.map((message, index) => (
-          <div key={message.id || index} className={`message ${message.type}`}>
-            {message.type === 'user' ? (
-              <div className="user-message-bubble">
-                <p>{message.text}</p>
+      {!showDialog && (
+        <>
+          {onBack && (
+            <div className="chat-header">
+              <button className="back-button" onClick={onBack}>
+                <img 
+                  src="/Black-Kingston-Logo.png" 
+                  alt="City of Kingston" 
+                  className="header-logo"
+                />
+                <span className="material-symbols-outlined">arrow_back</span>
+                {t.backToHome}
+              </button>
+              <div className="language-selector">
+                <select 
+                  value={language} 
+                  onChange={(e) => setLanguage(e.target.value)}
+                  className="language-select"
+                >
+                  <option value="en">English</option>
+                  <option value="fr">Français</option>
+                </select>
               </div>
-            ) : (
-              <div className="bot-message-card">
-                <div className="bot-message-header">
-                  <div className="bot-avatar">
-                    <img 
-                      src="/Black-Kingston-Logo.png" 
-                      alt="City of Kingston" 
-                      className="avatar-logo"
-                    />
+            </div>
+          )}
+          {!onBack && (
+            <div className="chat-header-top">
+              <div className="language-selector">
+                <select 
+                  value={language} 
+                  onChange={(e) => setLanguage(e.target.value)}
+                  className="language-select"
+                >
+                  <option value="en">English</option>
+                  <option value="fr">Français</option>
+                </select>
+              </div>
+            </div>
+          )}
+          <div className="messages-container" ref={messagesContainerRef}>
+            {messages.length === 0 && (
+              <div className="welcome-section">
+                <h1 className="welcome-title">{t.welcomeTitle}</h1>
+                <p className="welcome-subtitle">{t.welcomeSubtitle}</p>
+              </div>
+            )}
+            {messages.map((message, index) => (
+              <div key={message.id || index} className={`message ${message.type}`}>
+                {message.type === 'user' ? (
+                  <div className="user-message-bubble">
+                    <p>{message.text}</p>
                   </div>
-                  <h3 className="bot-name">{t.botName}</h3>
-                </div>
-                <div className="bot-message-content">
-                  {message.streaming && !message.text ? (
-                    <div className="loading-dots">
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                    </div>
-                  ) : message.text ? (
-                    <>
-                      <div className="message-text-content">
-                        {renderFormattedText(message.text)}
-                        {message.streaming && (
-                          <span className="streaming-cursor">▋</span>
-                        )}
+                ) : (
+                  <div className="bot-message-card">
+                    <div className="bot-message-header">
+                      <div className="bot-avatar">
+                        <img 
+                          src="/Black-Kingston-Logo.png" 
+                          alt="City of Kingston" 
+                          className="avatar-logo"
+                        />
                       </div>
-                    </>
-                  ) : null}
-                </div>
-                {message.results && message.results.length > 0 && shouldShowResults(message.text, message.results) && (
-                  <div className="message-sources">
-                    <p className="sources-label">Official Sources</p>
-                    <div className="sources-list">
-                      {dedupeSources(message.results, 6).map((result, idx) => (
-                        <a 
-                          key={idx}
-                          href={result.source_url} 
-                          target="_blank" 
-                          rel="noopener noreferrer" 
-                          className="source-link"
-                        >
-                          <span className="material-symbols-outlined">link</span>
-                          <span>
-                            {getSourceLabel(result)}
-                          </span>
-                        </a>
-                      ))}
+                      <h3 className="bot-name">{t.botName}</h3>
                     </div>
+                    <div className="bot-message-content">
+                      {message.streaming && !message.text ? (
+                        <div className="loading-dots">
+                          <span></span>
+                          <span></span>
+                          <span></span>
+                        </div>
+                      ) : message.text ? (
+                        <>
+                          <div className="message-text-content">
+                            {renderFormattedText(message.text)}
+                            {message.streaming && (
+                              <span className="streaming-cursor">▋</span>
+                            )}
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                    {message.results && message.results.length > 0 && shouldShowResults(message.text, message.results) && (
+                      <div className="message-sources">
+                        <p className="sources-label">Official Sources</p>
+                        <div className="sources-list">
+                          {dedupeSources(message.results, 6).map((result, idx) => (
+                            <a 
+                              key={idx}
+                              href={result.source_url} 
+                              target="_blank" 
+                              rel="noopener noreferrer" 
+                              className="source-link"
+                            >
+                              <span className="material-symbols-outlined">link</span>
+                              <span>
+                                {getSourceLabel(result)}
+                              </span>
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
+            ))}
+            <div ref={messagesEndRef} />
           </div>
-        ))}
-        <div ref={messagesEndRef} />
-      </div>
 
-      <div className="input-container">
-        <form onSubmit={handleSubmit} className="input-form">
-          <div className="input-wrapper">
-            <span className="input-icon material-symbols-outlined">chat_bubble</span>
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={t.placeholder}
-              className="chat-input"
-              disabled={loading}
-            />
-            <button type="submit" className="send-button" disabled={loading || !input.trim()}>
-              <span className="material-symbols-outlined">send</span>
-            </button>
+          <div className="input-container">
+            <form onSubmit={handleSubmit} className="input-form">
+              <div className="input-wrapper">
+                <span className="input-icon material-symbols-outlined">chat_bubble</span>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder={t.placeholder}
+                  className="chat-input"
+                  disabled={loading}
+                />
+                <button type="submit" className="send-button" disabled={loading || !input.trim()}>
+                  <span className="material-symbols-outlined">send</span>
+                </button>
+              </div>
+              <p className="input-disclaimer">{t.disclaimer} <a href="https://www.cityofkingston.ca" target="_blank" rel="noopener noreferrer">kingston.ca</a></p>
+            </form>
           </div>
-          <p className="input-disclaimer">{t.disclaimer} <a href="https://www.cityofkingston.ca" target="_blank" rel="noopener noreferrer">kingston.ca</a></p>
-        </form>
-      </div>
+        </>
+      )}
     </div>
   );
 };
