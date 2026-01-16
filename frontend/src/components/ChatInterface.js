@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import './ChatInterface.css';
 
 const ChatInterface = ({ initialQuery = '', onBack }) => {
@@ -17,7 +17,6 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
   const [reportReason, setReportReason] = useState('incorrect');
   const [reportNote, setReportNote] = useState('');
   const [reportCopied, setReportCopied] = useState(false);
-  const [reportSubmitted, setReportSubmitted] = useState(false);
   const messagesContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -85,15 +84,15 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQuery]);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback((shouldScroll = true) => {
     // Avoid pushing the welcome screen up on initial load (mobile especially)
-    if (!messages || messages.length === 0) return;
+    if (!shouldScroll) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   useEffect(() => {
-    if (messages.length > 0) scrollToBottom();
-  }, [messages]);
+    scrollToBottom(messages.length > 0);
+  }, [messages.length, scrollToBottom]);
 
   // Auto-focus input on mount (for mobile keyboard)
   useEffect(() => {
@@ -405,7 +404,7 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
                     ? { ...msg, text: accumulatedTextRef.current }
                     : msg
                 ));
-                scrollToBottom();
+                scrollToBottom(true);
               } else if (data.type === 'results') {
                 setMessages(prev => prev.map(msg => 
                   msg.id === botMessageId 
@@ -845,8 +844,6 @@ const ChatInterface = ({ initialQuery = '', onBack }) => {
     if (!payload) return;
     try {
       await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-      setReportSubmitted(true);
-      setTimeout(() => setReportSubmitted(false), 1200);
       setReportOpen(false);
     } catch (e) {
       // If clipboard isn't available, download instead (still no backend)

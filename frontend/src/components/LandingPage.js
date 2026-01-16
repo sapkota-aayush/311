@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import './LandingPage.css';
 
 const LandingPage = ({ onStartChat, onShowUpdates }) => {
@@ -147,9 +147,30 @@ const LandingPage = ({ onStartChat, onShowUpdates }) => {
 
       <footer className="landing-footer">
         <div className="footer-links">
-          <a href="#" className="footer-link">Accessibility</a>
-          <a href="#" className="footer-link">Bylaw Search</a>
-          <a href="#" className="footer-link">Privacy & Security</a>
+          <a
+            href="https://www.cityofkingston.ca/accessibility/"
+            className="footer-link"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Accessibility
+          </a>
+          <a
+            href="https://www.cityofkingston.ca/city-hall/bylaws/"
+            className="footer-link"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Bylaw Search
+          </a>
+          <a
+            href="https://www.cityofkingston.ca/privacy/"
+            className="footer-link"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Privacy &amp; Security
+          </a>
         </div>
         <div className="footer-copyright">
           <div className="copyright-text">© 2024 The City of Kingston</div>
